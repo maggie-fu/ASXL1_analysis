@@ -1,0 +1,729 @@
+---
+title: "07-Turvey_new_preprocessing"
+author: "Maggie"
+date: "8/17/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+# wd
+setwd("~/bcchruser/Projects/Turvey/ASXL1/")
+
+# library
+library(minfi)
+library(dplyr)
+library(methylumi)
+library(wateRmelon)
+
+# internal scripts
+source("~/maggie.fu/Functions/PreprocessScripts.R")
+
+# load data
+load("~/maggie.fu/Reference/HM450_fdat.RData")
+load("~/maggie.fu/Reference/EPIC_fdat.RData")
+load("RData/602-GEO_blood_meta.RData")
+load("RData/10-Biggs_patient_raw.RData")
+```
+
+### Reading intensity files and idats
+
+Done on compute canada. Refer to the job files.
+
+
+### Combine MLset with the metadata file created in 06rmd
+
+```{r}
+load("RData/602-GEO_blood_meta.RData")
+
+# GSE105018
+GSE105018_MLset_FN <- readRDS("reference/GSE105018_MLset_FN.rds")
+GSE105018qcDF <- readRDS("reference/GSE105018qcDF.rds")
+GSE105018qcDF$Sample_ID <- gsub("_.*", "", GSE105018qcDF$Sample_ID)
+GSE105018.m <- left_join(GSE105018.m, GSE105018qcDF, by = c("GEO_Accession" = "Sample_ID"))
+meta <- pData(GSE105018_MLset_FN)
+meta$GEO_Accession <- gsub("_.*", "", meta$barcode)
+meta <- left_join(meta, GSE105018.m)
+pData(GSE105018_MLset_FN) <- meta
+saveRDS(GSE105018_MLset_FN, "reference/GSE105018_MLset_FN.rds")
+
+# GSE100227
+message("GSE100227")
+GSE100227 <- readRDS("reference/GSE100227.rds")
+rownames(GSE100227) <- GSE100227[, 1]
+GSE100227.met <- GSE100227[, grep("Met", colnames(GSE100227))]
+colnames(GSE100227.met) <- GSE100227.m$GEO_Accession
+GSE100227.unmet <- GSE100227[, grep("Unmet", colnames(GSE100227))]
+colnames(GSE100227.unmet) <- GSE100227.m$GEO_Accession
+GSE100227.pval <- GSE100227[, grep("Det", colnames(GSE100227))]
+colnames(GSE100227.pval) <- GSE100227.m$GEO_Accession
+GSE100227 <- new("MethyLumiSet",
+                 methylated = as.matrix(GSE100227.met), 
+                 unmethylated = as.matrix(GSE100227.unmet), 
+                 betas = as.matrix(GSE100227.met / (GSE100227.met + GSE100227.unmet + 100)), 
+                 pvals = GSE100227.pval, 
+                 phenoData = as(GSE100227.m, "AnnotatedDataFrame"),
+                 featureData = as(fData_450[rownames(GSE100227.met), ], "AnnotatedDataFrame"), 
+                 experimentData = TB@experimentData, 
+                 .__classVersion__ = TB@.__classVersion__)
+saveRDS(GSE100227, "GSE100227_MLset.rds")
+
+# GSE103657
+message("GSE103657")
+GSE103657 <- readRDS("GSE103657.rds")
+rownames(GSE103657) <- GSE103657[, 1]
+GSE103657 <- GSE103657[, -1]
+GSE103657.met <- GSE103657[, grep("Met", colnames(GSE103657))]
+colnames(GSE103657.met) <- GSE103657.m$GEO_Accession
+GSE103657.unmet <- GSE103657[, grep("Unmet", colnames(GSE103657))]
+colnames(GSE103657.unmet) <- GSE103657.m$GEO_Accession
+GSE103657.pval <- GSE103657[, grep("Det", colnames(GSE103657))]
+colnames(GSE103657.pval) <- GSE103657.m$GEO_Accession
+GSE103657 <- new("MethyLumiSet",
+                 methylated = as.matrix(GSE103657.met), 
+                 unmethylated = as.matrix(GSE103657.unmet), 
+                 betas = as.matrix(GSE103657.met / (GSE103657.met + GSE103657.unmet + 100)), 
+                 pvals = GSE103657.pval, 
+                 phenoData = as(GSE103657.m, "AnnotatedDataFrame"),
+                 featureData = as(fData_450[rownames(GSE103657.met), ], "AnnotatedDataFrame"), 
+                 experimentData = TB@experimentData, 
+                 .__classVersion__ = TB@.__classVersion__)
+saveRDS(GSE103657, "GSE103657_MLset.rds")
+
+# GSE104942
+message("GSE104942")
+GSE104942 <- readRDS("GSE104942.rds")
+GSE104942.met <- GSE104942[, c(1, grep("_met", colnames(GSE104942)))]
+GSE104942.unmet <- GSE104942[, c(1, grep("_unmet", colnames(GSE104942)))]
+GSE104942.pval <- GSE104942[, c(1, grep("Det", colnames(GSE104942)))]
+colnames(GSE104942.met) <- GSE104942.m$GEO_Accession
+colnames(GSE104942.unmet) <- GSE104942.m$GEO_Accession
+colnames(GSE104942.pval) <- GSE104942.m$GEO_Accession
+GSE104942 <- new("MethyLumiSet",
+                 methylated = as.matrix(GSE104942.met), 
+                 unmethylated = as.matrix(GSE104942.unmet), 
+                 betas = as.matrix(GSE104942.met / (GSE104942.met + GSE104942.unmet + 100)), 
+                 pvals = GSE104942.pval, 
+                 phenoData = as(GSE104942.m, "AnnotatedDataFrame"),
+                 featureData = as(fData_450[rownames(GSE104942.met), ], "AnnotatedDataFrame"), 
+                 experimentData = TB@experimentData, 
+                 .__classVersion__ = TB@.__classVersion__)
+saveRDS(GSE104942, "GSE104942_MLset.rds")
+
+# GSE107080
+message("GSE107080")
+GSE107080 <- readRDS("GSE107080.rds")
+rownames(GSE107080) <- GSE107080[, 1]
+GSE107080 <- GSE107080[, -1]
+GSE107080.met <- GSE107080[, grep("Met", colnames(GSE107080))]
+GSE107080.unmet <- GSE107080[, grep("Unmet", colnames(GSE107080))]
+GSE107080.pval <- GSE107080[, grep("Det", colnames(GSE107080))]
+colnames(GSE107080.met) <- GSE107080.m$GEO_Accession
+colnames(GSE107080.unmet) <- GSE107080.m$GEO_Accession
+colnames(GSE107080.pval) <- GSE107080.m$GEO_Accession
+GSE107080 <- new("MethyLumiSet",
+                 methylated = as.matrix(GSE107080.met), 
+                 unmethylated = as.matrix(GSE107080.unmet), 
+                 betas = as.matrix(GSE107080.met / (GSE107080.met + GSE107080.unmet + 100)), 
+                 pvals = GSE107080.pval, 
+                 phenoData = as(GSE107080.m, "AnnotatedDataFrame"),
+                 featureData = as(fData_450[rownames(GSE107080.met), ], "AnnotatedDataFrame"), 
+                 experimentData = TB@experimentData, 
+                 .__classVersion__ = TB@.__classVersion__)
+saveRDS(GSE107080, "GSE107080_MLset.rds")
+
+# GSE112611
+message("GSE112611")
+GSE112611 <- readRDS("GSE112611.rds")
+rownames(GSE112611) <- GSE112611[, 1]
+GSE112611.met <- GSE112611[, grep("Met", colnames(GSE112611))]
+GSE112611.unmet <- GSE112611[, grep("Unmet", colnames(GSE112611))]
+GSE112611.pval <- GSE112611[, grep("Det", colnames(GSE112611))]
+colnames(GSE112611.met) <- GSE112611.m$GEO_Accession
+colnames(GSE112611.unmet) <- GSE112611.m$GEO_Accession
+colnames(GSE112611.pval) <- GSE112611.m$GEO_Accession
+GSE112611 <- new("MethyLumiSet",
+                 methylated = as.matrix(GSE112611.met), 
+                 unmethylated = as.matrix(GSE112611.unmet), 
+                 betas = as.matrix(GSE112611.met / (GSE112611.met + GSE112611.unmet + 100)), 
+                 pvals = GSE112611.pval, 
+                 phenoData = as(GSE112611.m, "AnnotatedDataFrame"),
+                 featureData = as(fData_450[rownames(GSE112611.met), ], "AnnotatedDataFrame"), 
+                 experimentData = TB@experimentData, 
+                 .__classVersion__ = TB@.__classVersion__)
+saveRDS(GSE112611, "GSE112611_MLset.rds")
+
+# GSE132203
+message("GSE132203")
+GSE132203.idat <- readRDS("GSE132203_idat.rds")
+rownames(GSE132203.idat) <- GSE132203.idat[, 1]
+GSE132203.met <- GSE132203.idat[, grep("Met", colnames(GSE132203.idat))]
+GSE132203.unmet <- GSE132203.idat[, grep("Unmet", colnames(GSE132203.idat))]
+GSE132203.pval <- GSE132203.idat[, grep("Det", colnames(GSE132203.idat))]
+colnames(GSE132203.met) <- GSE132203.m$GEO_Accession
+colnames(GSE132203.unmet) <- GSE132203.m$GEO_Accession
+colnames(GSE132203.pval) <- GSE132203.m$GEO_Accession
+GSE132203 <- new("MethyLumiSet",
+                 methylated = as.matrix(GSE132203.met), 
+                 unmethylated = as.matrix(GSE132203.unmet), 
+                 betas = as.matrix(GSE132203.met / (GSE132203.met + GSE132203.unmet + 100)), 
+                 pvals = GSE132203.pval, 
+                 phenoData = as(GSE132203.m, "AnnotatedDataFrame"),
+                 featureData = as(fData_450[rownames(GSE132203.met), ], "AnnotatedDataFrame"), 
+                 experimentData = TB@experimentData, 
+                 .__classVersion__ = TB@.__classVersion__)
+saveRDS(GSE132203, "GSE132203_MLset.rds")
+
+# GSE36369
+message("GSE36369")
+GSE36369 <- readRDS("GSE36369.rds")
+colnames(GSE36369) %>% head()
+rownames(GSE36369) <- GSE36369[, 1]
+GSE36369.met <- GSE36369[, grep("Signal_B", colnames(GSE36369))]
+GSE36369.unmet <- GSE36369[, grep("Signal_A", colnames(GSE36369))]
+colnames(GSE36369.met) <- GSE36369.m$GEO_Accession
+colnames(GSE36369.unmet) <- GSE36369.m$GEO_Accession
+GSE36369 <- new("MethyLumiSet",
+                 methylated = as.matrix(GSE36369.met), 
+                 unmethylated = as.matrix(GSE36369.unmet), 
+                 betas = as.matrix(GSE36369.met / (GSE36369.met + GSE36369.unmet + 100)), 
+                 phenoData = as(GSE36369.m, "AnnotatedDataFrame"),
+                 featureData = as(fData_450[rownames(GSE36369.met), ], "AnnotatedDataFrame"), 
+                 experimentData = TB@experimentData, 
+                 .__classVersion__ = TB@.__classVersion__)
+saveRDS(GSE36369, "GSE36369_MLset.rds")
+
+# GSE40279
+message("GSE40279")
+GSE40279 <- readRDS("GSE40279.rds")
+rownames(GSE40279) <- GSE40279[, 2]
+GSE40279<- GSE40279[, -c(1:3)]
+GSE40279.met <- GSE40279[, grep("SignalB", colnames(GSE40279))]
+GSE40279.unmet <- GSE40279[, grep("SignalA", colnames(GSE40279))]
+GSE40279.int <- GSE40279[, grep("Int", colnames(GSE40279))]
+colnames(GSE40279.met) <- GSE40279.m$GEO_Accession
+colnames(GSE40279.unmet) <- GSE40279.m$GEO_Accession
+GSE40279 <- new("MethyLumiSet",
+                methylated = as.matrix(GSE40279.met),
+                unmethylated = as.matrix(GSE40279.unmet),
+                betas = as.matrix(GSE40279.met / (GSE40279.met + GSE40279.unmet + 100)), 
+                intensities.IB = GSE40279.int,
+                phenoData = as(GSE40279.m, "AnnotatedDataFrame"),
+                featureData = as(fData_450[rownames(GSE40279.met), ], "AnnotatedDataFrame"),
+                experimentData = TB@experimentData,
+                .__classVersion__ = TB@.__classVersion__)
+saveRDS(GSE40279, "GSE40279_MLset.rds")
+
+# GSE50660
+message("GSE50660")
+GSE50660 <- readRDS("GSE50660.rds")
+rownames(GSE50660) <- GSE50660[, 1]
+GSE50660 <- GSE50660[, -1]
+GSE50660.met <- GSE50660[, grep("Signal_B", colnames(GSE50660))]
+GSE50660.unmet <- GSE50660[, grep("Signal_A", colnames(GSE50660))]
+colnames(GSE50660.met) <- GSE50660.m$GEO_Accession
+colnames(GSE50660.unmet) <- GSE50660.m$GEO_Accession
+GSE50660 <- new("MethyLumiSet",
+                 methylated = as.matrix(GSE50660.met), 
+                 unmethylated = as.matrix(GSE50660.unmet), 
+                 betas = as.matrix(GSE50660.met / (GSE50660.met + GSE50660.unmet + 100)), 
+                 phenoData = as(GSE50660.m, "AnnotatedDataFrame"),
+                 featureData = as(fData_450[rownames(GSE50660.met), ], "AnnotatedDataFrame"), 
+                 experimentData = TB@experimentData, 
+                 .__classVersion__ = TB@.__classVersion__)
+saveRDS(GSE50660, "GSE50660_MLset.rds")
+
+# GSE53740
+message("GSE53740")
+GSE53740.1 <- readRDS("GSE53740_1.rds") 
+GSE53740.2 <- readRDS("GSE53740_2.rds") 
+GSE53740 <- full_join(GSE53740.1, GSE53740.2)
+GSE53740 <- as.data.frame(GSE53740)
+rownames(GSE53740) <- GSE53740[, 1]
+GSE53740.met <- GSE53740[, grep("Met", colnames(GSE53740))]
+GSE53740.unmet <- GSE53740[, grep("Unmet", colnames(GSE53740))]
+GSE53740.pval <- GSE53740[, grep("Det", colnames(GSE53740))]
+colnames(GSE53740.met) <- GSE53740.m$GEO_Accession
+colnames(GSE53740.unmet) <- GSE53740.m$GEO_Accession
+colnames(GSE53740.pval) <- GSE53740.m$GEO_Accession
+GSE53740 <- new("MethyLumiSet",
+                 methylated = as.matrix(GSE53740.met), 
+                 unmethylated = as.matrix(GSE53740.unmet), 
+                 betas = as.matrix(GSE53740.met / (GSE53740.met + GSE53740.unmet + 100)), 
+                 pvals = GSE53740.pval, 
+                 phenoData = as(GSE53740.m, "AnnotatedDataFrame"),
+                 featureData = as(fData_450[rownames(GSE53740.met), ], "AnnotatedDataFrame"), 
+                 experimentData = TB@experimentData, 
+                 .__classVersion__ = TB@.__classVersion__)
+saveRDS(GSE53740, "GSE53740_MLset.rds")
+
+# GSE53816
+message("GSE53816")
+GSE53816 <- readRDS("GSE53816.rds")
+rownames(GSE53816) <- GSE53816[, 1]
+GSE53816.met <- GSE53816[, grep("Signal_B", colnames(GSE53816))]
+GSE53816.unmet <- GSE53816[, grep("Signal_A", colnames(GSE53816))]
+GSE53816.pval <- GSE53816[, grep("Det", colnames(GSE53816))]
+colnames(GSE53816.met) <- GSE53816.m$GEO_Accession
+colnames(GSE53816.unmet) <- GSE53816.m$GEO_Accession
+colnames(GSE53816.pval) <- GSE53816.m$GEO_Accession
+GSE53816 <- new("MethyLumiSet",
+                 methylated = as.matrix(GSE53816.met), 
+                 unmethylated = as.matrix(GSE53816.unmet), 
+                 betas = as.matrix(GSE53816.met / (GSE53816.met + GSE53816.unmet + 100)), 
+                 pvals = GSE53816.pval, 
+                 phenoData = as(GSE53816.m, "AnnotatedDataFrame"),
+                 featureData = as(fData_450[rownames(GSE53816.met), ], "AnnotatedDataFrame"), 
+                 experimentData = TB@experimentData, 
+                 .__classVersion__ = TB@.__classVersion__)
+saveRDS(GSE53816, "GSE53816_MLset.rds")
+
+# GSE55763
+message("GSE55763")
+GSE55763 <- readRDS("GSE55763.rds")
+colnames(GSE55763) %>% head()
+rownames(GSE55763) <- GSE55763[, 1]
+GSE55763.met <- GSE55763[, grep("Met", colnames(GSE55763))]
+GSE55763.unmet <- GSE55763[, grep("Unmet", colnames(GSE55763))]
+GSE55763.pval <- GSE55763[, grep("Det", colnames(GSE55763))]
+colnames(GSE55763.met) <- GSE55763.m$GEO_Accession
+colnames(GSE55763.unmet) <- GSE55763.m$GEO_Accession
+colnames(GSE55763.pval) <- GSE55763.m$GEO_Accession
+GSE55763 <- new("MethyLumiSet",
+                 methylated = as.matrix(GSE55763.met), 
+                 unmethylated = as.matrix(GSE55763.unmet), 
+                 betas = as.matrix(GSE55763.met / (GSE55763.met + GSE55763.unmet + 100)), 
+                 pvals = GSE55763.pval, 
+                 phenoData = as(GSE55763.m, "AnnotatedDataFrame"),
+                 featureData = as(fData_450[rownames(GSE55763.met), ], "AnnotatedDataFrame"), 
+                 experimentData = TB@experimentData, 
+                 .__classVersion__ = TB@.__classVersion__)
+saveRDS(GSE55763, "GSE55763_MLset.rds")
+
+# GSE56046
+message('GSE56046')
+GSE56046 <- readRDS("GSE56046.rds")
+colnames(GSE56046) %>% head()
+rownames(GSE56046) <- GSE56046[, 1]
+GSE56046.met <- GSE56046[, grep("\\.met", colnames(GSE56046))]
+GSE56046.unmet <- GSE56046[, grep("\\.unmet", colnames(GSE56046))]
+GSE56046.pval <- GSE56046[, grep("\\.det", colnames(GSE56046))]
+colnames(GSE56046.met) <- GSE56046.m$GEO_Accession
+colnames(GSE56046.unmet) <- GSE56046.m$GEO_Accession
+colnames(GSE56046.pval) <- GSE56046.m$GEO_Accession
+GSE56046 <- new("MethyLumiSet",
+                 methylated = as.matrix(GSE56046.met), 
+                 unmethylated = as.matrix(GSE56046.unmet), 
+                 betas = as.matrix(GSE56046.met / (GSE56046.met + GSE56046.unmet + 100)), 
+                 pvals = GSE56046.pval, 
+                 phenoData = as(GSE56046.m, "AnnotatedDataFrame"),
+                 featureData = as(fData_450[rownames(GSE56046.met), ], "AnnotatedDataFrame"), 
+                 experimentData = TB@experimentData, 
+                 .__classVersion__ = TB@.__classVersion__)
+saveRDS(GSE56046, "GSE56046_MLset.rds")
+
+# GSE56105
+message("GSE56105")
+GSE56105 <- readRDS("GSE56105.rds")
+colnames(GSE56105) %>% head()
+rownames(GSE56105) <- GSE56105[, 1]
+GSE56105.met <- GSE56105[, grep("Met", colnames(GSE56105))]
+GSE56105.unmet <- GSE56105[, grep("Unmet", colnames(GSE56105))]
+GSE56105.pval <- GSE56105[, grep("Det", colnames(GSE56105))]
+colnames(GSE56105.met) <- GSE56105.m$GEO_Accession
+colnames(GSE56105.unmet) <- GSE56105.m$GEO_Accession
+colnames(GSE56105.pval) <- GSE56105.m$GEO_Accession
+GSE56105 <- new("MethyLumiSet",
+                 methylated = as.matrix(GSE56105.met), 
+                 unmethylated = as.matrix(GSE56105.unmet), 
+                 betas = as.matrix(GSE56105.met / (GSE56105.met + GSE56105.unmet + 100)), 
+                 pvals = GSE56105.pval, 
+                 phenoData = as(GSE56105.m, "AnnotatedDataFrame"),
+                 featureData = as(fData_450[rownames(GSE56105.met), ], "AnnotatedDataFrame"), 
+                 experimentData = TB@experimentData, 
+                 .__classVersion__ = TB@.__classVersion__)
+saveRDS(GSE56105, "GSE56105_MLset.rds")
+
+# GSE56581
+message("GSE56581")
+GSE56581 <- readRDS("GSE56581.rds")
+colnames(GSE56581) %>% head()
+rownames(GSE56581) <- GSE56581[, 1]
+GSE56581.met <- GSE56581[, grep("\\.met", colnames(GSE56581))]
+GSE56581.unmet <- GSE56581[, grep("\\.unmet", colnames(GSE56581))]
+GSE56581.pval <- GSE56581[, grep("det", colnames(GSE56581))]
+colnames(GSE56581.met) <- GSE56581.m$GEO_Accession
+colnames(GSE56581.unmet) <- GSE56581.m$GEO_Accession
+colnames(GSE56581.pval) <- GSE56581.m$GEO_Accession
+GSE56581 <- new("MethyLumiSet",
+                 methylated = as.matrix(GSE56581.met), 
+                 unmethylated = as.matrix(GSE56581.unmet), 
+                 betas = as.matrix(GSE56581.met / (GSE56581.met + GSE56581.unmet + 100)), 
+                 pvals = GSE56581.pval, 
+                 phenoData = as(GSE56581.m, "AnnotatedDataFrame"),
+                 featureData = as(fData_450[rownames(GSE56581.met), ], "AnnotatedDataFrame"), 
+                 experimentData = TB@experimentData, 
+                 .__classVersion__ = TB@.__classVersion__)
+saveRDS(GSE56581, "GSE56581_MLset.rds")
+
+# GSE56600
+message("GSE56600")
+GSE56600 <- readRDS("GSE56600.rds")
+colnames(GSE56600) %>% head()
+rownames(GSE56600) <- GSE56600[, 1]
+GSE56600.met <- GSE56600[, grep("Met", colnames(GSE56600))]
+GSE56600.unmet <- GSE56600[, grep("Unmet", colnames(GSE56600))]
+GSE56600.pval <- GSE56600[, grep("Det", colnames(GSE56600))]
+colnames(GSE56600.met) <- GSE56600.m$GEO_Accession
+colnames(GSE56600.unmet) <- GSE56600.m$GEO_Accession
+colnames(GSE56600.pval) <- GSE56600.m$GEO_Accession
+GSE56600 <- new("MethyLumiSet",
+                 methylated = as.matrix(GSE56600.met), 
+                 unmethylated = as.matrix(GSE56600.unmet), 
+                 betas = as.matrix(GSE56600.met / (GSE56600.met + GSE56600.unmet + 100)), 
+                 pvals = GSE56600.pval, 
+                 phenoData = as(GSE56600.m, "AnnotatedDataFrame"),
+                 featureData = as(fData_450[rownames(GSE56600.met), ], "AnnotatedDataFrame"), 
+                 experimentData = TB@experimentData, 
+                 .__classVersion__ = TB@.__classVersion__)
+saveRDS(GSE56600, "GSE56600_MLset.rds")
+
+# GSE59250
+message("GSE59250")
+GSE59250 <- readRDS("GSE59250.rds")
+colnames(GSE59250) %>% head()
+rownames(GSE59250) <- GSE59250[, 1]
+GSE59250.met <- GSE59250[, grep("Signal_B", colnames(GSE59250))]
+GSE59250.unmet <- GSE59250[, grep("Signal_A", colnames(GSE59250))]
+GSE59250.pval <- GSE59250[, grep("Det", colnames(GSE59250))]
+colnames(GSE59250.met) <- GSE59250.m$GEO_Accession
+colnames(GSE59250.unmet) <- GSE59250.m$GEO_Accession
+colnames(GSE59250.pval) <- GSE59250.m$GEO_Accession
+GSE59250 <- new("MethyLumiSet",
+                 methylated = as.matrix(GSE59250.met), 
+                 unmethylated = as.matrix(GSE59250.unmet), 
+                 betas = as.matrix(GSE59250.met / (GSE59250.met + GSE59250.unmet + 100)), 
+                 pvals = GSE59250.pval, 
+                 phenoData = as(GSE59250.m, "AnnotatedDataFrame"),
+                 featureData = as(fData_450[rownames(GSE59250.met), ], "AnnotatedDataFrame"), 
+                 experimentData = TB@experimentData, 
+                 .__classVersion__ = TB@.__classVersion__)
+saveRDS(GSE59250, "GSE59250_MLset.rds")
+
+# GSE72680
+message("GSE72680")
+GSE72680 <- readRDS("GSE72680.rds")
+colnames(GSE72680) %>% head()
+rownames(GSE72680) <- GSE72680[, 1]
+GSE72680.met <- GSE72680[, grep("Met", colnames(GSE72680))]
+GSE72680.unmet <- GSE72680[, grep("Unmet", colnames(GSE72680))]
+GSE72680.pval <- GSE72680[, grep("Det", colnames(GSE72680))]
+colnames(GSE72680.met) <- GSE72680.m$GEO_Accession
+colnames(GSE72680.unmet) <- GSE72680.m$GEO_Accession
+colnames(GSE72680.pval) <- GSE72680.m$GEO_Accession
+GSE72680 <- new("MethyLumiSet",
+                 methylated = as.matrix(GSE72680.met), 
+                 unmethylated = as.matrix(GSE72680.unmet), 
+                 betas = as.matrix(GSE72680.met / (GSE72680.met + GSE72680.unmet + 100)), 
+                 pvals = GSE72680.pval, 
+                 phenoData = as(GSE72680.m, "AnnotatedDataFrame"),
+                 featureData = as(fData_450[rownames(GSE72680.met), ], "AnnotatedDataFrame"), 
+                 experimentData = TB@experimentData, 
+                 .__classVersion__ = TB@.__classVersion__)
+saveRDS(GSE72680, "GSE72680_MLset.rds")
+
+# GSE72773
+message("GSE72773")
+GSE72773 <- readRDS("GSE72773.rds") %>% as.data.frame()
+colnames(GSE72773) %>% head()
+rownames(GSE72773) <- GSE72773[, 1]
+GSE72773.met <- GSE72773[, grep("Signal_B", colnames(GSE72773))]
+GSE72773.unmet <- GSE72773[, grep("Signal_A", colnames(GSE72773))]
+GSE72773.pval <- GSE72773[, grep("Det", colnames(GSE72773))]
+colnames(GSE72773.met) <- GSE72773.m$GEO_Accession
+colnames(GSE72773.unmet) <- GSE72773.m$GEO_Accession
+colnames(GSE72773.pval) <- GSE72773.m$GEO_Accession
+GSE72773 <- new("MethyLumiSet",
+                 methylated = as.matrix(GSE72773.met), 
+                 unmethylated = as.matrix(GSE72773.unmet), 
+                 betas = as.matrix(GSE72773.met / (GSE72773.met + GSE72773.unmet + 100)), 
+                 pvals = GSE72773.pval, 
+                 phenoData = as(GSE72773.m, "AnnotatedDataFrame"),
+                 featureData = as(fData_450[rownames(GSE72773.met), ], "AnnotatedDataFrame"), 
+                 experimentData = TB@experimentData, 
+                 .__classVersion__ = TB@.__classVersion__)
+saveRDS(GSE72773, "GSE72773_MLset.rds")
+
+# GSE72774
+message("GSE72774")
+GSE72774 <- readRDS("GSE72774.rds")
+rownames(GSE72774) <- GSE72774[, 1]
+GSE72774.met <- GSE72774[, grep("Met", colnames(GSE72774))]
+GSE72774.unmet <- GSE72774[, grep("Unmet", colnames(GSE72774))]
+GSE72774.pval <- GSE72774[, grep("Det", colnames(GSE72774))]
+colnames(GSE72774.met) <- GSE72774.m$GEO_Accession
+colnames(GSE72774.unmet) <- GSE72774.m$GEO_Accession
+colnames(GSE72774.pval) <- GSE72774.m$GEO_Accession
+GSE72774 <- new("MethyLumiSet",
+                 methylated = as.matrix(GSE72774.met), 
+                 unmethylated = as.matrix(GSE72774.unmet), 
+                 betas = as.matrix(GSE72774.met / (GSE72774.met + GSE72774.unmet + 100)), 
+                 pvals = GSE72774.pval, 
+                 phenoData = as(GSE72774.m, "AnnotatedDataFrame"),
+                 featureData = as(fData_450[rownames(GSE72774.met), ], "AnnotatedDataFrame"), 
+                 experimentData = TB@experimentData, 
+                 .__classVersion__ = TB@.__classVersion__)
+saveRDS(GSE72774, "GSE72774_MLset.rds")
+
+# GSE72775
+message("GSE72775")
+GSE72775 <- readRDS("GSE72775.rds") %>% as.data.frame()
+colnames(GSE72775) %>% head()
+rownames(GSE72775) <- GSE72775[, 1]
+GSE72775.met <- GSE72775[, grep("Signal_B", colnames(GSE72775))]
+GSE72775.unmet <- GSE72775[, grep("Signal_A", colnames(GSE72775))]
+GSE72775.pval <- GSE72775[, grep("Det", colnames(GSE72775))]
+colnames(GSE72775.met) <- GSE72775.m$GEO_Accession
+colnames(GSE72775.unmet) <- GSE72775.m$GEO_Accession
+colnames(GSE72775.pval) <- GSE72775.m$GEO_Accession
+GSE72775 <- new("MethyLumiSet",
+                 methylated = as.matrix(GSE72775.met), 
+                 unmethylated = as.matrix(GSE72775.unmet), 
+                 betas = as.matrix(GSE72775.met / (GSE72775.met + GSE72775.unmet + 100)), 
+                 pvals = GSE72775.pval, 
+                 phenoData = as(GSE72775.m, "AnnotatedDataFrame"),
+                 featureData = as(fData_450[rownames(GSE72775.met), ], "AnnotatedDataFrame"), 
+                 experimentData = TB@experimentData, 
+                 .__classVersion__ = TB@.__classVersion__)
+saveRDS(GSE72775, "GSE72775_MLset.rds")
+
+# GSE80283 
+message("GSE80283")
+GSE80283.idat <- readRDS("GSE80283.rds") %>% as.data.frame()
+GSE80283 <- readRDS("GSE80283.rds") %>% as.data.frame()
+colnames(GSE80283.idat) %>% head()
+rownames(GSE80283.idat) <- GSE80283.idat[, 1]
+GSE80283.met <- GSE80283.idat[, grep("Met", colnames(GSE80283.idat))]
+GSE80283.unmet <- GSE80283.idat[, grep("Unmet", colnames(GSE80283.idat))]
+GSE80283.pval <- GSE80283.idat[, grep("Det", colnames(GSE80283.idat))]
+colnames(GSE80283.met) <- GSE80283.m$GEO_Accession
+colnames(GSE80283.unmet) <- GSE80283.m$GEO_Accession
+colnames(GSE80283.pval) <- GSE80283.m$GEO_Accession
+GSE80283 <- new("MethyLumiSet",
+                 methylated = as.matrix(GSE80283.met), 
+                 unmethylated = as.matrix(GSE80283.unmet), 
+                 betas = as.matrix(GSE80283.met / (GSE80283.met + GSE80283.unmet + 100)), 
+                 pvals = GSE80283.pval, 
+                 phenoData = as(GSE80283.m, "AnnotatedDataFrame"),
+                 featureData = as(fData_450[rownames(GSE80283.met), ], "AnnotatedDataFrame"), 
+                 experimentData = TB@experimentData, 
+                 .__classVersion__ = TB@.__classVersion__)
+saveRDS(GSE80283, "GSE80283_MLset.rds")
+
+# GSE80417
+message("GSE80417")
+GSE80417.met <- readRDS("GSE80417_met.rds")
+rownames(GSE80417.met) <- GSE80417.met[, 1]
+GSE80417.met <- GSE80417.met[, -1]
+GSE80417.unmet <- readRDS("GSE80417_unmet.rds")
+rownames(GSE80417.unmet) <- GSE80417.unmet[, 1]
+GSE80417.unmet <- GSE80417.unmet[, -1]
+colnames(GSE80417.met) <- GSE80417.m$GEO_Accession
+colnames(GSE80417.unmet) <- GSE80417.m$GEO_Accession
+GSE80417 <- new("MethyLumiSet",
+                 methylated = as.matrix(GSE80417.met), 
+                 unmethylated = as.matrix(GSE80417.unmet), 
+                 betas = as.matrix(GSE80417.met / (GSE80417.met + GSE80417.unmet + 100)), 
+                 phenoData = as(GSE80417.m, "AnnotatedDataFrame"),
+                 featureData = as(fData_450[rownames(GSE80417.met), ], "AnnotatedDataFrame"), 
+                 experimentData = TB@experimentData, 
+                 .__classVersion__ = TB@.__classVersion__)
+saveRDS(GSE80417, "GSE80417_MLset.rds")
+
+# GSE82273
+message("GSE82273")
+GSE82273 <- readRDS("GSE82273.rds")
+colnames(GSE82273) %>% head()
+rownames(GSE82273) <- GSE82273[, 1]
+GSE82273.met <- GSE82273[, grep("Met", colnames(GSE82273))]
+GSE82273.unmet <- GSE82273[, grep("Unmet", colnames(GSE82273))]
+GSE82273.pval <- GSE82273[, grep("Det", colnames(GSE82273))]
+colnames(GSE82273.met) <- GSE82273.m$GEO_Accession
+colnames(GSE82273.unmet) <- GSE82273.m$GEO_Accession
+colnames(GSE82273.pval) <- GSE82273.m$GEO_Accession
+GSE82273 <- new("MethyLumiSet",
+                 methylated = as.matrix(GSE82273.met), 
+                 unmethylated = as.matrix(GSE82273.unmet), 
+                 betas = as.matrix(GSE82273.met / (GSE82273.met + GSE82273.unmet + 100)), 
+                 pvals = GSE82273.pval, 
+                 phenoData = as(GSE82273.m, "AnnotatedDataFrame"),
+                 featureData = as(fData_450[rownames(GSE82273.met), ], "AnnotatedDataFrame"), 
+                 experimentData = TB@experimentData, 
+                 .__classVersion__ = TB@.__classVersion__)
+saveRDS(GSE82273, "GSE82273_MLset.rds")
+
+# GSE84727
+message("GSE84727")
+GSE84727.met <- readRDS("GSE84727_met.rds") %>% as.data.frame()
+rownames(GSE84727.met) <- GSE84727.met[, 1]
+GSE84727.met <- GSE84727.met[, -1]
+GSE84727.unmet <- readRDS("GSE84727_unmet.rds") %>% as.data.frame()
+rownames(GSE84727.unmet) <- GSE84727.unmet[, 1]
+GSE84727.unmet <- GSE84727.unmet[, -1]
+GSE84727.pval <- readRDS("GSE84727_pval.rds")
+colnames(GSE84727.met) <- GSE84727.m$GEO_Accession
+colnames(GSE84727.unmet) <- GSE84727.m$GEO_Accession
+colnames(GSE84727.pval) <- GSE84727.m$GEO_Accession
+GSE84727 <- new("MethyLumiSet",
+                 methylated = as.matrix(GSE84727.met), 
+                 unmethylated = as.matrix(GSE84727.unmet), 
+                 betas = as.matrix(GSE84727.met / (GSE84727.met + GSE84727.unmet + 100)), 
+                 pvals = GSE84727.pval, 
+                 phenoData = as(GSE84727.m, "AnnotatedDataFrame"),
+                 featureData = as(fData_450[rownames(GSE84727.met), ], "AnnotatedDataFrame"), 
+                 experimentData = TB@experimentData, 
+                 .__classVersion__ = TB@.__classVersion__)
+saveRDS(GSE84727, "GSE84727_MLset.rds")
+
+# GSE89353
+message("GSE89353")
+GSE89353 <- readRDS("GSE89353.rds")
+colnames(GSE89353) %>% head()
+rownames(GSE89353) <- GSE89353[, 1]
+GSE89353.met <- GSE89353[, grep("Signal_B", colnames(GSE89353))]
+GSE89353.unmet <- GSE89353[, grep("Signal_A", colnames(GSE89353))]
+GSE89353.pval <- GSE89353[, grep("Det", colnames(GSE89353))]
+colnames(GSE89353.met) <- GSE89353.m$GEO_Accession
+colnames(GSE89353.unmet) <- GSE89353.m$GEO_Accession
+colnames(GSE89353.pval) <- GSE89353.m$GEO_Accession
+GSE89353 <- new("MethyLumiSet",
+                 methylated = as.matrix(GSE89353.met), 
+                 unmethylated = as.matrix(GSE89353.unmet), 
+                 betas = as.matrix(GSE89353.met / (GSE89353.met + GSE89353.unmet + 100)), 
+                 pvals = GSE89353.pval, 
+                 phenoData = as(GSE89353.m, "AnnotatedDataFrame"),
+                 featureData = as(fData_450[rownames(GSE89353.met), ], "AnnotatedDataFrame"), 
+                 experimentData = TB@experimentData, 
+                 .__classVersion__ = TB@.__classVersion__)
+saveRDS(GSE89353, "GSE89353_MLset.rds")
+
+# GSE97628
+message("GSE97628")
+GSE97628 <- readRDS("GSE97628.rds") %>% as.data.frame()
+colnames(GSE97628) %>% head()
+rownames(GSE97628) <- GSE97628[, 1]
+GSE97628.pval <- GSE97628[, grep("Det", colnames(GSE97628))]
+GSE97628 <- GSE97628[, grep("METH", colnames(GSE97628))]
+GSE97628.met <- GSE97628[, -grep("UNMETH", colnames(GSE97628))]
+GSE97628.unmet <- GSE97628[, grep("UNMETH", colnames(GSE97628))]
+colnames(GSE97628.met) <- GSE97628.m$GEO_Accession
+colnames(GSE97628.unmet) <- GSE97628.m$GEO_Accession
+colnames(GSE97628.pval) <- GSE97628.m$GEO_Accession
+GSE97628 <- new("MethyLumiSet",
+                 methylated = as.matrix(GSE97628.met), 
+                 unmethylated = as.matrix(GSE97628.unmet), 
+                 betas = as.matrix(GSE97628.met / (GSE97628.met + GSE97628.unmet + 100)), 
+                 pvals = GSE97628.pval, 
+                 phenoData = as(GSE97628.m, "AnnotatedDataFrame"),
+                 featureData = as(fData_450[rownames(GSE97628.met), ], "AnnotatedDataFrame"), 
+                 experimentData = TB@experimentData, 
+                 .__classVersion__ = TB@.__classVersion__)
+saveRDS(GSE97628, "GSE97628_MLset.rds")
+
+
+
+```
+
+### Outlier detection
+
+```{r}
+# Watermelon pfilter
+out1 <- DetPBisCTest(MLset)
+# Lumi
+out2 <- detectOutlier(as.matrix(betas(MLset))) %>% which(.) # This calculates potential outliers
+# Watermelon
+out3 <- outlyx(MLset) 
+out3 <- rownames(out3)[out3$outliers == T]
+# locFDR Outlier Detector
+out4 <- locfdr_LMM(betas(MLset), pData(MLset))
+#save(out2, out3, out4, file = "RData/04-outliers.RData")
+
+c(list(ClustOutlier = out2), list(IQRnPCOutlier = out3), list(LocfdrOutlier = out4))
+out <- table(c(names(out4), out3, names(out2))) %>% .[.==3] %>% names() 
+BetaPlot(MLset[, sampleNames(MLset) %in% out], "Sample_ID") # examine what they look like
+
+```
+
+### Add Sex and age prediction
+
+```{r}
+load("RData/03-all_GEO_reference.RData")
+MLset <- PedRef
+DTname <- "PedRef"
+
+# Sex prediction
+if (is.null(fData(MLset)$CHR)) {
+    if (dim(MLset)[[1]] > 600000) {
+        load("~/maggie.fu/Reference/EPIC_fdat.RData")
+        fdat <- merge(fData(MLset), fData_EPIC, by = 0, sort = F)
+    } else if (dim(MLset)[[1]] > 300000) {
+        load("~/maggie.fu/Reference/HM450_fdat.RData")
+        fdat <- merge(fData(MLset), fData_450, by = 0, sort = F)
+    }
+    rownames(fdat) <- fdat$Row.names
+    fData(MLset) <- fdat[rownames(MLset), -1]
+}
+prediction <- SexPred(MLset, th = 0.79)
+pData(MLset)$estimatedSex <- prediction$estimatedSex
+mismatch <- pData(MLset)[pData(MLset)$estimatedSex != pData(MLset)$Sex, c("Sex", "estimatedSex")]
+mismatch <- cbind(mismatch, prediction$score[sampleNames(MLset)[pData(MLset)$estimatedSex != pData(MLset)$Sex]])
+# The estimated sex of samples 14-012_At Dx,control-52,EMVB153F do not match the reported sex.
+#               Sex   estimatedSex    score
+# 14-012_At Dx  M           F       0.7489666
+# control-52    F           M       0.8945490
+# EMVB153F      M           F       0.6976677
+# The score of 14-012_At is somewhat reasonable, but the other two may need to be removed
+p1 <- BetaPlot(MLset[fData(MLset)$CHR %in% c("X","Y"), ], "Sex")
+p2 <- BetaPlot(MLset[fData(MLset)$CHR %in% c("X","Y"), ], "estimatedSex")
+grid.arrange(p1, p2, ncol = 2)
+BetaPlot(MLset[fData(MLset)$CHR %in% c("X","Y"), !sampleNames(MLset) %in% c("EMVB153F", "control-52")], "Sex")
+# Beta distribution also showed that "EMVB153F" and "control-52" are really weird and should be removed
+
+# Age prediction 
+bt_horvath <- AgePredDat(MLset, Version = "Old", DTname = DTname)
+meta <- pData(MLset)
+meta$Female <- meta$Sex %>% 
+                gsub("M", "0", .) %>%
+                gsub("F", "1", .) # horvath anno needs age, female, and tissue type
+anno_horvath <- data.frame("SampleID" = colnames(bt_horvath)[-1], "Age" = meta$Age, "Female" = meta$Female, "Tissue" = meta$Tissue)
+write.table(anno_horvath, paste0("DNAmClock/", DTname, "_anno_horvath.csv"), row.names = F, sep = ",")
+out_horvath <- read.csv(paste0("DNAmClock/", DTname, "_betas_horvath.output.csv"), stringsAsFactors = F) # Import Horvath calculator result
+
+ggplot(out_horvath, aes(Age, DNAmAge, color = Tissue, shape = predictedGender)) + geom_point() + geom_abline() + theme_bw() # outliers are screwing up the plots (EMVB153F and control-119)
+epiage <- out_horvath[, c("SampleID", "DNAmAge", "BioAge1HA", "AgeAccelerationResidual", "AAHOAdjCellCounts", "BioAge4HAStaticAdjAge")]
+colnames(epiage) <- c("Sample_ID", "Horvath", "Hannum", "UEAA", "IEAA", "EEAA")
+identical(epiage$Sample_ID, sampleNames(MLset)) # All sample except for X in front
+pData(MLset) <- cbind(pData(MLset), epiage[, -1])
+
+# Sample exploratory analysis
+meta <- pData(MLset)
+BetaPlot(MLset, "Cohort") 
+BetaPlot(MLset, "Tissue") # one buccal sample in GSE124366 that have extremely poor quality
+
+SamplePlots(MLset, mdsvar = meta$Tissue, hcvar = meta$Sample_ID, hmvars = meta[, c("Age", "Cohort", "Platform_ID", "Tissue", "Disease_Status")], hmcor = T)
+SamplePlots(MLset, mdsvar = meta$Cohort, hmvars = meta[, c("Age", "Cohort", "Platform_ID", "Tissue", "Disease_Status", "Individual")], hmcor = F, mds = T, hclust = F, SNP = F)
+SamplePlots(MLset, hmvars = meta[, c("Age", "Individual", "Tissue")], hmcor = F, mds = F, hclust = F, SNP = T)
+SamplePlots(MLset, hmvars = meta[, c("Age", "Cohort", "Platform_ID", "Tissue", "Disease_Status")], hmcor = T, mds = F, hclust = F, SNP = F, hmname = F)
+
+# Correlation plots 
+library(snow)
+library(pvclust)
+result <- parPvclust(betas(MLset), method.dist="cor", method.hclust="average", nboot = 1000)
+```
+
+
+### Normalization
+
+```{r}
+
+```
+

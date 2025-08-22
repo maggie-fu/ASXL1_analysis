@@ -1,0 +1,795 @@
+---
+title: "Turvey-Biggs Project Report 1"
+author: "Maggie Fu"
+date: "`r Sys.Date()`"
+css: "custom.css"
+output:
+    rmdformats::readthedown:
+        highlight: kate
+        lightbox: true
+        fig_width: 8
+        fig_height: 4
+---
+
+``` {r knitr_init, echo = FALSE, cache = FALSE, message = F}
+library(knitr)
+library(kableExtra)
+library(rmdformats)
+library(dplyr)
+
+## Global options
+options(max.print="200")
+opts_chunk$set(echo = TRUE,
+               cache = TRUE,
+               prompt = FALSE,
+               tidy = TRUE,
+               comment = NA,
+               message = FALSE,
+               warning = FALSE)
+opts_knit$set(width=200)
+```
+
+<style type="text/css">
+
+body{ /* Normal  */
+     font-size: 14px;
+ }
+td {  /* Table  */
+ font-size: 8px;
+}
+h1.title {
+ font-size: 38px;
+ color: DarkRed;
+}
+h1 { /* Header 1 */
+ font-size: 28px;
+ color: DarkBlue;
+}
+h2 { /* Header 2 */
+   font-size: 22px;
+ color: Black;
+}
+h3 { /* Header 3 */
+ font-size: 18px;
+ font-family: "Times New Roman", Times, serif;
+ color: DarkGray;
+}
+code.r{ /* Code block */
+   font-size: 12px;
+}
+pre { /* Code block - determines code spacing between lines */
+   font-size: 14px;
+}
+</style>
+
+This report summarizes the pipeline and approach used to perform the data QC and analysis on the ASXL1 patient samples (in collaboration with Drs. Stuart Turvey & Catherine Biggs) that were processed for DNA methylation in the Kobor Lab.
+
+Special thanks to Dr. David Lin, whose report I followed closely to produce this report.
+
+&nbsp;
+&nbsp;
+
+# **Study design**
+
+##A. Background
+The study involves a patient enrolled in the BC Children's Hospital for chronic rubella virus-associated cutaneous granulomatous disease. Whole exon sequencing of the patient has shown compound heterozygous mutations in *ASXL1* gene. *ASXL1* mutations have been found in various malignant myeloid diseases and are generally associated with poor prognosis **[1]**. The ASXL1 protein is involved in multiple transcriptional regulatory pathways, notably transcriptional repression mediated by polycomb repressive complex 1 and 2 (PRC1 and PRC2) **[2, 3]**.
+
+PRC1-mediated repression involves ubiquitination of histone H2A at lysine 119. ASXL1-3 binds with BAP1 to form Polycomb Repressive DeUBiquitinase (PR-DUB) complex, which deubiquitinates H2AK119 **[2]**. In the absence of ASXL1, PR-DUB loses deubiquitinase activity, leading to a global increase in H2AK119ub *in vivo* **[4]**. In parallel, ASXL1 plays a role in PRC2-mediated trimethylation of H3K27 **[3]**. *ASXL1* knockdown leads to a global loss of H3K27me3 and de-repression of HOX genes expression **[3]**. Disruption of ASXL1 expression has been shown to affect epigenome-wide chromosomal modification and expression changes **[3, 4]**. Additionally, *ASXL1* mutation in patients with myeloproliferative neoplasms (MPN) is associated with differential DNA methylation (DNAm) patterns at various oncogenes and tumor suppressor genes in population studies **[5, 6]**. 
+
+Yet, it is unclear what the role of *ASXL1* mutation is on the patient's epigenome and how it affects her condition. Therefore, we used Illumina EPIC BeadChips to characterize her DNA methylome **[7]**. The patient's methylome was then compared with that of an unaffected sibling and mapped on to an age- and tissue-matched reference to identify gene regions that significantly deviated from the average methylome of a healthy population. 
+
+##B. Cohort Characteristics
+Peripheral whole blood (WB), peripheral blood mononuclear cell (PBMC), buccal epithelial cells (BEC) and saliva (SAL) samples were collected from the patient (age 11). The patient has an older sister (age 14) who is heterozygous for *ASXL1* and does not demonstrate the same symptom as far as we are aware of. The sister's saliva and buccal samples are also collected to control for genetic variation. 
+For reference building, I examined public and in-house dataset for buccal and blood samples of the target age range (10-12). The search yielded 360 WB samples, 50 PBMC samples, and 320 BEC samples. The reference cohorts' genetic ancestry is mostly unknown. The sex distribution is even. 
+
+##C. Sample Processing Summaries
+The Kobor lab extracted gDNA from the patient’s samples, and the DNA samples were processed for DNA methylation analysis using the Illumina Methylation BeadChips that measures over 850 thousand methylation sites. All samples yielded a measurable quantity of high-purity gDNA for bisulfite conversion. In total, 1 array run was performed. There was also 1 technical replicate of the PBMC sample included.
+
+Following raw data import into the GenomeStudio software (Illumina), DNAm signals were color-corrected and background subtracted, and the resulting data were carried forward to the Kobor lab epigenetic QC pipeline for an extensive quality control check and age calculation processing as described below.
+
+&nbsp;
+&nbsp;
+
+***
+
+&nbsp;
+&nbsp;
+
+# **Pre-Processing Pipeline**
+
+##1. Raw Sample Quality Assessment
+
+###A. Sample Beta Distributions
+
+Beta values, which represent the percentage of methylation assigned at each of the methylation sites on the array, were examined prior to sample preprocessing. Typically, a bimodal distribution is expected with a majority of sites nearing 0, suggestive of hypomethylation, and a majority of sites nearing 1 suggestive of hypermethylation. Also, sample types usually result in a different in the peak heights reflective of cell types (*i.e.* Blood samples tend to have a higher hypermethylation density peak, whereas for buccal/saliva the density peaks at hypo-/hyper-methylation have more even heights).
+
+**Figure 1** demonstrated the beta value densities as captured by the arrays for the patients (Pat) and her sister (Ctrl). Each line represents a sample's global beta value distribution. All samples showed expected bimodal distribution, but some had unexpected features. The patient's BEC sample showed a stronger hemimethylated peak than the sister’s. The hemimethylated peaks are common in BEC, but this one was fairly strong and the difference between the patient and sister's samples may indicate a significant difference in cell-type composition. Additionally, their saliva samples' beta distributions were also very different. The sister's sample distribution more closely resembled BEC whereas the patient's more closely resembles WB. This again pointed to differences in cell-type composition where the patients' sample was likely high in neutrophils, similar to WB. The patient's PBMC and WB samples followed the standard profile of respective tissues, with much higher hypermethylation peaks than hypomethylation peaks.
+
+```{r Fig1, echo=F, fig.align = "center", fig.height=8, fig.width=8}
+knitr::include_graphics("plots/01_bdis_raw.jpeg")
+```
+**Figure 1**  Raw sample beta value distributions of the patient and the sister's samples from the Illumina DNAm Arrays.
+
+&nbsp;
+&nbsp;
+
+
+###B. Sample detection p values and bisulfite conversion efficiencies
+
+One of the first quality metrics we assessed was the overall sample detection p-value, which represents the probability that the target sequence signal is distinguishable from the background. A high detection p-value indicates a bad run for the sample. *We usually take 0.01 as the detection P-value threshold*. All the samples in this run had detection p-value below 0.00035, indicating high confidence in the signal quality.
+
+An additional metrics we checked was the bisulfite conversion score. The *WateRmelon* package automatically calculates a score of the conversion efficiency using the built-in control probes on the arrays. The recommended threshold of this measure by the package is 80. The minimal conversion efficiency among all samples were 93.7, so the sample quality was satisfactory in this aspect as well. 
+
+Given that the patient and the sister's samples needed to be combined with the reference for later analysis, they were preprocessed together with the reference to minimize the batch effect. 
+
+&nbsp;
+&nbsp;
+
+***
+
+##2. Reference Building 
+
+###A. Gene Expression Omnibus (GEO) queries
+
+To minimize issues with data privacy and collaborator consent, I used all publicly available data from the Gene Expression Omnibus (GEO) database (with a large part of the data uploaded by the Kobor Lab). Given that there were little public data on EPIC microarray because of its short history, I included HM450K array in the search, which is a previous generation of the EPIC array but with lower coverage **[8]**. For the reference for WB and PBMC, query terms included "blood", "PBMC", "peripheral", and "buffy" when I searched under the "characteristic" or "source" categories. For the BEC samples, query terms included "buccal", "oral swab", and "BEC". 
+
+###B. Filtering and combining reference datasets
+
+The cohorts were then filtered based on the availability of the age information. Additionally, small datasets with less than 5 samples within the target age range were removed. Finally, cohorts with less than 5 healthy samples were removed because the disease samples might skew the reference. The final blood reference included 4 datasets (*GSE56105*, *GSE112611*, *GSE124366*, *GSE97362*) with a total of 426 samples, and the buccal reference included 4 datasets (*GSE80261*, *GSE109042*, *GSE124366*, *GSE94734*) with a total of 319 samples. 
+
+All the samples were subset down to the common probes shared across the 450K and EPIC array. Some public data were probe filtered before the upload. When the datasets were combined, these probes were lost as well. This left 421,929 probes in the combined reference dataset. 
+
+&nbsp;
+&nbsp;
+
+***
+
+##3. Exploratory Analyses
+
+###A. Sample sex information
+
+We can use the DNA methylation data to estimate a given individual's sex as a way of checking possible sample mix-ups. This can also serve as quality control for the public datasets where detection p-value and bisulfite conversion efficiency information were missing. There are a handful of CpG sites on the EPIC arrays located in the X inactivation center. The betas are typically more than 90% in males and about 50% in females at these sites. The exact betas can change depending on the sample quality and measured tissue, so the prediction cutoff is set at 80% in this case. 
+
+Of the 749 samples, this algorithm returned **3 mismatches** from the biological sex provided in the cohort metadata. As a secondary check, I aggregated all the sex chromosome probes available on the arrays and graphed the beta-value distributions. Biological males are expected to have a bimodal distribution resembling autosomal distributions, but females should display a tri-modal distribution due to X-inactivation. **Figure 2** showed 2 samples with mispredicted sexes and 1 sample with a left-shifted hypermethylation peak, which can also lead to false prediction. I removed the mispredicted samples (*control-52* and *EMVB153F*) from the dataset but left the sample with the left-shifted peak to see if it shows up in outlier detection analysis later on. 
+
+
+```{r Fig2, echo=F, fig.align = "center", fig.height=4, fig.width=8}
+knitr::include_graphics("plots/02_bdis_sex.jpeg")
+```
+**Figure 2**  Beta-value distributions of X chromosome probes as colored by reported biological sex (*left*) and estimated sex using methylation (*right*)
+
+&nbsp;
+&nbsp;
+
+###B. Epigenetic Age calculations
+
+Epigenetic age is an estimation of the sample's chronological age based on its DNA methylation profile. Here we used Dr. Steve Horvath's algorithm, which is based on 353 CpG sites that change with age across tissues **[9]**. The epigenetic age has also been shown to be influenced by factors such as health and stress, which associates with advanced epigenetic aging. 
+**Figure 3** showed the results of epigenetic age estimation using the Horvath algorithm on the left panel. As we can see,  there was a wide range in the estimated epigenetic age for the reference sample despite less than 3 years of overall range among their chronological age. There was also a strong tissue bias where blood was often predicted to be older than their actual age and buccal was almost always predicted to be younger. However, the patient's sample (ASXL1) was consistently predicted to be older than her chronological age across the tissue. This phenomenon was not observed in the sibling control (Control). This result suggested that the patient's DNA methylation profile deviated from that of the healthy population in her age.
+
+```{r Fig3, echo=F, fig.align = "center", fig.height=4, fig.width=8}
+knitr::include_graphics("plots/03_DNAmAge.jpeg")
+```
+**Figure 3** Epigenetic age (Y-axis) vs chronological age (X-axis) for the 748 reference samples as calculated from their methylation profiles. Samples were colored by tissue and represented by shapes based on disease status. The diagonal line represents a perfect correlational line between x and y (r=1.0)
+
+&nbsp;
+&nbsp;
+
+###C. Sample Clustering
+
+The next step of exploratory analysis involved sample clustering using all the CpG methylations or SNPs. Typically when using all the CpGs to cluster before X and Y chromosomes filtering, one would expect the clustering using methylation profiles to be largely based on tissue, sex, and developmental time points. Whereas that based on SNPs will be mostly based on ethnicity, genetic relatedness, and sex. We would also expect the replicates to cluster closer than distinct samples. Here I showed the clustering of individual samples based on 100,000 random methylation sites on the arrays to demonstrate that tissues had a strong effect and separated the reference into two major groups: blood and buccal. Interestingly, the batch effect was much stronger in the blood samples in comparison to the buccal samples. We can also see that the *ASXL1* mutation did not manifest in a major shift in global methylation profile, as shown by her sample clustering and the heatmap pattern. 
+
+```{r Fig4, echo=F, fig.align = "center", fig.height=4, fig.width=8}
+knitr::include_graphics("plots/04_correlation_heatmap.jpeg")
+```
+**Figure 4**  Clustering of the 748 reference pediatric samples based on 100,000 random probes on the DNAm microarrays.
+
+&nbsp;
+&nbsp;
+
+###B. Principal Component Analysis (PCA)
+
+Principal Component Analysis (PCA) is a dimension reduction method commonly used to investigate high-dimensional data. The method identifies the dimensions that captures the most variability within a given dataset. I performed PCA based on the sample beta values, and **Figure 5** showed an output of the sample distributions on the first 2 principal components (PCs). To visualize the sample spread, I colored the PCs with one of four variables: cohort, platform, tissue, and disease. **Figure 5-A and 5-C** showed that PC1 mainly captures the variability in cohorts whereas PC2 captures the variability in tissues. While disease status appeared to separate along both PCs in **Figure 5-D**, they were also significantly confounded with individual cohorts. 
+
+**A**
+```{r Fig5-1, echo=F, fig.align = "center", fig.height=2, fig.width=8}
+knitr::include_graphics("plots/05-PCA_before_bc_cohort.jpeg")
+```
+**B**
+```{r Fig5-2, echo=F, fig.align = "center", fig.height=2, fig.width=8}
+knitr::include_graphics("plots/05-PCA_before_bc_platform.jpeg")
+```
+**C**
+```{r Fig5-3, echo=F, fig.align = "center", fig.height=2, fig.width=8}
+knitr::include_graphics("plots/05-PCA_before_bc_tissue.jpeg")
+```
+**D**
+```{r Fig5-4, echo=F, fig.align = "center", fig.height=2, fig.width=8}
+knitr::include_graphics("plots/05-PCA_before_bc_disease.jpeg")
+```
+**Figure 5**  PCA plots for the patient and reference samples. The figures showed the sample distributions on the first two principal components (X: PC1; y: PC2), with the adjusted variance of each PC indicated on the axes. A. Cohort, B. Platform, C. Tissue, D. Disease.
+
+&nbsp;
+&nbsp;
+
+***
+
+
+##4. Sample Filtering & Probe Filtering
+
+###A. Outlier Analyses
+
+We use 3 separate methods to evaluate sample outliers in the dataset.
+
+1. locfdr
+The **Locfdr** approach, which is based on PCA to identify and remove outlier samples, as performed in Hannum *et al.* **[10]**. Taken from our previous Bioinformatician Rachel Edgar: "We convert each sample into a z-score statistic, based on the squared distance of its 1st PC from the population mean. The z-statistic was converted to a local false-discovery rate using the Gaussian cumulative distribution and the Benjamini-Hochberg procedure **[11]**.” In this study, I set the FDR threshold at 0.2. Samples falling below this threshold were designated as potential outliers. 
+
+2. Outlyx (wateRmelon)
+*Outlyx* is a built-in *wateRmelon* package function that assesses methylation data quality. The outlyx function identifies any samples that are inconsistent with the rest of the data, through a combination of IQR and PCOUT algorithms. 
+
+3. detectOutlier (lumi)
+*detectOutlier* is a built-in *lumi* package function. This method estimates outliers based on distance from the center. 
+
+To call out outliers with confidence, I decided to call a sample an outlier if **at least 2 or more of the above methods called an outlier**. The final list of outliers then was:
+
+"EMVB117L", "EMVB153F", "EMVC044D", "E0014_FASD", "WD216_FASD", "control-52", "control-119"<br>
+
+These samples were removed on the reference dataset because they were considered to be outliers.
+
+&nbsp;
+&nbsp;
+
+###B. Probe Filtering
+
+In order to ensure that the microarray readings are reliable, we generally remove the probes that perform poorly either based on a quality assessment or previous literature **[7]**. These include probes that exhibit non-specific binding (cross-reactive) or contain a SNP site in the probes (polymorphic). Because most public dataset lack relevant quality assessment measurements like detection p-value and bisulfite conversion efficiency, we will not be able to filter probes based on quality assessment. Finally, given that there were both male and female participants, probes on the X and Y chromosomes were removed, as they also interfere with downstream normalization steps. Generally, SNP probes were removed as well, but it is inapplicable here because most datasets removed them before submission to GEO. **Figure 7** is a probe attrition plot that summarized the steps taken and the number of probes retained/removed through each stage.
+
+```{r Fig6, echo=F, fig.align = "center", fig.height=2, fig.width=8}
+knitr::include_graphics("plots/06_probe_attrition.jpeg")
+```
+**Figure 6** Probe attrition plot showing the probes removed in the QC process. Grey = # probes remaining, and light blue = # probes filtered out at each step. In total, 16,243 probes were removed. The remaining **405,686** autosomal probes were carried forward to the next step of preprocessing.
+
+&nbsp;
+&nbsp;
+
+
+***
+
+
+##5. Sample Normalization
+
+###A. Missing Probe Imputation
+
+Missing betas were first imputed in cases where array readings were *NA*. Imputation was done following a filter of CpGs with >5% of missing values for the cohort to ensure imputation quality. In this case, none of the remaining probes were filtered out.
+
+Imputation was performed using the **k nearest neighbors** function in the *impute* package, using the default parameters and the k neighbors value of 10, which means the DNAm value for any given probe is estimated using the 10 nearest neighbor samples. After the imputation, we have estimated all NA values and the data is used to carry out PCA to further examine data variation.
+
+&nbsp;
+&nbsp;
+
+###B. Inter-sample Normalization (Quantile)
+
+Inter-sample normalizations, using the quantile method, are often done on DNA methylation data to reduce undetermined noise between array samples. However, quantile normalization is typically not used when there are global differences in DNAm profile due to important biological variables. Given that the reference contains multiple tissues that have drastically different methylation profile, quantile normalization can lead to major distortions in the data. Therefore, quantile normalization was not applied here.
+
+&nbsp;
+&nbsp;
+
+###C. Intra-sample Normalization (BMIQ)
+
+Next, intra-sample normalization was carried out using the BMIQ (Beta Mixture Quantile normalization) method, as described by Teschendorff *et al.* **[12]**. Illumina methylation arrays contain both Type 1 and Type 2 probes that are based on slightly different chemistries and exhibit differences in their dynamic detection ranges, BMIQ normalization serves to bring statistical distributions of the beta-values on these 2 different types of probes closer together, so they are more fitting for analyses as a group. This was illustrated below in **Figure 7**, where the Type 1 probe distributions (solid lines, overlayed) remained the same before and after BMIQ, but the Type 2 distribution shifted to resemble that of Type 1 only after BMIQ normalization.
+
+```{r Fig7, echo=F, fig.align = "center", fig.height=2, fig.width=8}
+knitr::include_graphics("plots/07_BMIQ_norm.jpeg")
+```
+**Figure 7** Type 1 and Type 2 probes’ beta distributions before and after BMIQ normalization.
+
+&nbsp;
+&nbsp;
+
+***
+
+##6. Batch Corrections (ComBat and SVA)
+
+###A. PCA/Heat Scree following BMIQ normalization
+
+Following data normalization, I first wanted to examine whether there is a large variance in the global methylation data that remained associated with technical variables. To do this, I performed an association test between each of the PC and our technical/study variables, presented in the form of a heatmap, where the association tests have been multiple-test corrected and significance were indicated in the form of q-value. 
+
+Note these diagnostic analyses were done on the **transformed M-values** rather than beta values for statistical reasons **[13]**. In general, beta values show larger variances given the scale discrepancy of these values.
+
+The results of this test were shown in **Figure 8** below. We can see that PC1 accounted for the majority of the variance (84.03%). It was also significantly correlated with all tested variables other than sex. Unfortunately, this meant that some of these covariates confounded with each other (*i.e.* the variance in the dataset associated with each variable overlapped). Also, we can see that the four main technical variables (cohort, platform (450K or EPIC), barcode (array chip), barcode position (the position of sample on a chip)) were consistently associated with many of the top PCs. However, with careful batch correction, we can still adjust the methylation effect to eliminate technical variations. This will be essential to capture the signal from the diseases. 
+
+```{r Fig8, echo=F, fig.align = "center", fig.height=2, fig.width=8}
+knitr::include_graphics("plots/08_scree_bc.jpeg")
+knitr::include_graphics("plots/08_heatplot_bc.jpeg")
+```
+**Figure 8**  Heatmap and scree plot (heat-scree plot) illustrating the adjusted variance of each PC (top) of the cohort's global methylation profiles and the technical/study variables associated with each PC (bottom).
+
+&nbsp;
+&nbsp;
+
+###B. ComBat: Batch Corrections
+
+*ComBat* was developed at Harvard by Johnson, Rabinovic, and Li **[14]** to correct for batch effects common to microarrays. This method performed parametric adjustments on *known* batch effects. Because the barcode and barcode position information were not available in all public datasets, we only corrected for the cohort and platform effect here while protecting for the variability from tissues and disease status. Here we started with the smaller "technical batch", the cohorts, which was then followed by correction on the platform. Here I performed batch correction on samples from all tissues together because there were not enough samples from the patients and the sibling. In order to assess the effect of batch appropriately, I batch corrected on all available data. 
+
+A diagnostic heat-scree plot was generated to assess the effect of batch correction on data variability. The results are shown in **Figure 9**.
+
+```{r Fig9, echo=F, fig.align = "center", fig.height=1, fig.width=8}
+knitr::include_graphics("plots/09_screeplot_c.jpeg")
+knitr::include_graphics("plots/09_heatplot_c.jpeg")
+```
+**Figure 9** Heat-scree plot on the pre-processed and normalized data set following ComBat that removed known batch effects.
+
+We can see that while the platform effect was largely removed, the cohort variable remained associated with the first few PCs. This is likely due to a significant confound of tissue and cohort. This will not be a problem in downstream analysis, however, because each tissue will be analyzed separately. 
+
+Following ComBat batch corrections, the adjusted variance in the first PC went down to 31.12%. This was a good sign as it showed the variability arose from cohort and array platform was largely reduced. Disease status remained significantly associated with all top PCs after correction, which was encouraging as it suggested the possibility that disease status was associated with global changes in DNA methylation.
+
+After correcting for the known batches, I made the PCA plots, again colored by cohorts, platforms, tissues, and diseases. As shown in **Figure 10-A, B, and C**, the variability from tissues was largely preserved (PC1) whereas that from platforms and cohorts was minimized (PC2), as illustrated by how samples from different batches overlapped in the figures.
+
+*A*
+```{r Fig10-1, echo=F, fig.align = "center", fig.height=1, fig.width=8}
+knitr::include_graphics("plots/10-PCA_after_bc_cohort.jpeg")
+```
+*B*
+```{r Fig10-2, echo=F, fig.align = "center", fig.height=1, fig.width=8}
+knitr::include_graphics("plots/10-PCA_after_bc_platform.jpeg")
+```
+*C*
+```{r Fig10-3, echo=F, fig.align = "center", fig.height=1, fig.width=8}
+knitr::include_graphics("plots/10-PCA_after_bc_tissue.jpeg")
+```
+*D*
+```{r Fig10-4, echo=F, fig.align = "center", fig.height=1, fig.width=8}
+knitr::include_graphics("plots/10-PCA_after_bc_disease.jpeg")
+```
+**Figure 10**  PCA plots for the patient and reference samples after batch correction. The figures showed the sample distributions on the first two principal components (X: PC1; y: PC2), with the adjusted variance of each PC indicated on the axes. A. Cohort, B. Platform, C. Tissue, D. Disease.
+
+&nbsp;
+&nbsp;
+
+###C. Surrogate Variable Analysis (sva)
+
+Finally, I used an unsupervised method to estimate the unknown batch effect. The method is called the surrogate variable analysis (sva) **[15]**. It takes in information on the study design and systematically removing latent variation shared across groups while preserving the differences between groups. Two surrogate variables, sv1 and sv2, were identified using this method.
+
+I performed ANOVA on sv1 and sv2 against the available chip and chip position variables to see whether these technical batches can partially contribute to these surrogate variables. 
+
+```{r}
+# sv1
+#                        Df Sum Sq  Mean Sq F value   Pr(>F)    
+# test$Barcode          133 0.6771 0.005091  11.024  < 2e-16 ***
+# test$Barcode_position   7 0.0199 0.002841   6.151 8.57e-07 ***
+
+# sv2
+#                        Df Sum Sq  Mean Sq F value  Pr(>F)    
+# test$Barcode          133 0.6742 0.005070   6.058 < 2e-16 ***
+# test$Barcode_position   7 0.0166 0.002366   2.827 0.00706 ** 
+```
+
+We can see that both surrogate variables were significantly associated with the technical batches. This suggested that the sva approach successfully captured the technical variability in this cohorts. Sv1 and sv2 will be regressed out later to ensure any differential methylation between the patient and the healthy reference is not a byproduct of the batch effect. 
+
+&nbsp;
+&nbsp;
+
+***
+
+##7. Preprocessing Summary
+
+As a last step of the quality check, I examined replicate correlations. The technical replicates were highly correlated with a Pearson correlation coefficient (r) of 0.997 and root-mean-squared-error (rmse) of 0.028. This showed that preprocessing has not introduced unnecessary variations to the data. The batch correction step reduced r slightly, but the magnitude of 0.001 was not concerning. The last step shown in **Figure 11**, cell-type deconvolution, will be described in the next section. It involves adjustment to the DNAm measures to regress out cell type effect. Finally, before performing downstream analyses, the replicates were dropped to prevent unnecessary bias. 
+
+```{r Fig11, echo=F, fig.align = "center", fig.height=1, fig.width=8}
+knitr::include_graphics("plots/11_cor_rmse_tech_rep.jpeg")
+```
+**Figure 11**  Pearson’s coefficient (r) and rmse of technical replicates throughout major preprocessing steps.
+
+Following sample pre-processing, we have filtered WB, PBMC, and BEC samples down to **265**, **58**, and **275** samples containing 1 technical replicate that should be subsequently removed, and a total of **405,686** variable probes for downstream analyses.
+
+&nbsp;
+&nbsp;
+
+***
+
+&nbsp;
+&nbsp;
+
+# **Data Analysis**
+
+##1. Cell Type Estimation & Deconvolution
+
+###A. Cell Type Estimation by in-house script *ECC8* and R package *EpiDISH*
+
+Cell-type composition is a known major contributor to DNAm patterns and can easily confound important findings. Therefore, it is important to adjust the DNAm data to account for different cell-type proportions across individuals **[16]**. While cell count data for the ASXL1 patient is available, it is still relevant to examine the cell type proportion of other samples in the reference, as well as matching the patient's cell count data on to the prediction. 
+
+Using the Houseman algorithm **[17] **, the proportions of 6 major immune cell types were predicted from the DNAm data: CD4T, CD8T, Natural Killer (NK), B cells, Monocytes (Mono), and Granulocytes (Gran). We used this approach on the WB and PBMC samples and observed some variations in cell type. However, the Houseman algorithm is based on a blood-specific reference. Therefore, for the buccal swabs, I used an R package called EpiDISH to estimate the proportions of epithelial cells (Epi), fibroblasts (Fib), and 7 immune cell types (CD4T, CD8T, NK, B cells, Mono, neutrophils (Neu), and eosinophils (Eos)) **[18]**. **Figure 12** is a heat-scree plot of the post-ComBat data when we included the estimated cell-type variables. The estimated cell-type proportions were significantly associated with the top PCs. 
+**Figure 13** showed the estimated cell-type proportion in each tissue and how they related to disease status. In both WB and PBMC, the patient had low CD4T and CD8T, which corroborated with the CBC results. The patient's B cell proportion also appeared to be low in WB. She also had a high proportion of NK cells in PBMC, perhaps as a byproduct of reduced amount of other cell types. In BEC, her estimated epithelial cell proportion was lower and neutrophils were higher than average. 
+
+**WB**
+```{r Fig12-1, echo=F, fig.align = "center", fig.height=1, fig.width=8}
+knitr::include_graphics("plots/12_scree_wb_bc.jpeg")
+knitr::include_graphics("plots/12_heatplot_wb_bc.jpeg")
+```
+
+**PBMC**
+```{r Fig12-2, echo=F, fig.align = "center", fig.height=1, fig.width=8}
+knitr::include_graphics("plots/12_scree_pbmc_bc.jpeg")
+knitr::include_graphics("plots/12_heatplot_pbmc_bc.jpeg")
+```
+
+**BEC**
+```{r Fig12-3, echo=F, fig.align = "center", fig.height=1, fig.width=8}
+knitr::include_graphics("plots/12_scree_bu_bc.jpeg")
+knitr::include_graphics("plots/12_heatplot_bu_bc.jpeg")
+```
+**Figure 12**  Heat-scree plots on the pre-processed, normalized, and batch-corrected data set and their associations with estimated cell type proportions in WB, PBMC, and BEC.
+
+&nbsp;
+&nbsp;
+
+**A**
+```{r Fig13-1, echo=F, fig.align = "center", fig.height=1, fig.width=8}
+knitr::include_graphics("plots/13_aov_disease_celltype_wb.jpeg")
+```
+
+**B**
+```{r Fig13-2, echo=F, fig.align = "center", fig.height=1, fig.width=8}
+knitr::include_graphics("plots/13_aov_disease_celltype_pbmc.jpeg")
+```
+
+**C**
+```{r Fig13-3, echo=F, fig.align = "center", fig.height=1, fig.width=8}
+knitr::include_graphics("plots/13_aov_disease_celltype_bu.jpeg")
+```
+**Figure 13** Associations between disease statuses and predicted cell-type proportions in A. WB, B. PBMC, and C. BEC.
+
+&nbsp;
+&nbsp;
+
+###B. Sibling Pair Direct Comparison
+
+To visualize the similarity between the patients and the unaffected sibling, I plotted their DNAm profile directly in **Figure 14**. Each point on the plot represented a measured methylation site. Typical correlation of unrelated samples looks like an even distribution around the identity line. However, the relationship, in this case, was extremely skewed. In combination with the cell type prediction data, the data demonstrated the necessity to regress out cell type effect, without which valid comparison of the patient and the reference cannot be drawn. 
+
+```{r Fig14, echo=F, fig.align = "center", fig.height=1, fig.width=8}
+knitr::include_graphics("plots/14_sibling_corr.jpeg")
+```
+**Figure 14**  Correlation of beta values of all 405,686 CpG sites of the patient and the sibling BECs. Light blue dots each represented a methylation site, with the x-axis corresponding to the patient's beta value and y-axis corresponding to that of the sibling. The dark blue line was the best fit line of all the data points using the loess method. 
+
+&nbsp;
+&nbsp;
+
+###C. Cell Type Deconvolution by linear regression
+
+To facilitate downstream analyses, one can either incorporate all the cell types into their models or regress out the cell type effects. This latter method was used here with reference to **[9]**, where linear modeling is applied. Additionally, I included the sv1 and sv2 to regress out technical batches at the same time. 
+
+Visually this was presented in **Figure 15 - 17**, which demonstrated that, post-cell type deconvolution, the cell type variation was adjusted to roughly equal proportions across individuals. 
+
+**A**
+```{r Fig15-1, echo=F, fig.align = "center", fig.height=1, fig.width=8}
+#A
+knitr::include_graphics("plots/15_cell_type_proportion_wb.jpeg")
+```
+
+**B**
+```{r Fig15-2, echo=F, fig.align = "center", fig.height=1, fig.width=8}
+#B
+knitr::include_graphics("plots/15_cell_type_proportion_wb_cr.jpeg")
+```
+**Figure 15**  Bioinformatically predicted immune cell type proportions in WB before (A) and after (B) cell-type deconvolution by linear regression.
+
+&nbsp;
+&nbsp;
+
+**A**
+```{r Fig16-1, echo=F, fig.align = "center", fig.height=1, fig.width=8}
+#A
+knitr::include_graphics("plots/16_cell_type_proportion_pbmc.jpeg")
+```
+
+**B**
+```{r Fig16-2, echo=F, fig.align = "center", fig.height=1, fig.width=8}
+#B
+knitr::include_graphics("plots/16_cell_type_proportion_pbmc_cr.jpeg")
+```
+**Figure 16**  Bioinformatically predicted immune cell type proportions in PBMC before (A) and after (B) cell-type deconvolution by linear regression. 
+
+&nbsp;
+&nbsp;
+
+**A**
+```{r Fig17-1, echo=F, fig.align = "center", fig.height=1, fig.width=8}
+#A
+knitr::include_graphics("plots/17_cell_type_proportion_bu.jpeg")
+```
+
+**B**
+```{r Fig17-2, echo=F, fig.align = "center", fig.height=1, fig.width=8}
+#B
+knitr::include_graphics("plots/17_cell_type_proportion_bu_cr.jpeg")
+```
+**Figure 17**  Bioinformatically predicted epithelial, fibroblast, and immune cell type proportions in BEC reference before (A) and after (B) cell-type deconvolution by linear regression.
+
+Following the cell-type correction, the association of the cell types with DNAm variation was gone for the first PCs, as shown in panel B of **Figure 15 -17**, allowing for unbiased downstream analyses. I noticed that in CD8T was associated with PC3-5 in BEC in **Figure 18**, but CD8T was barely present in buccal swabs, as shown in **Figure 17**. The signal observed was likely a byproduct of random noise or perhaps the CD8T amount was confounded with unmeasured and undetected technical variations.
+
+**WB**
+```{r Fig18-1, echo=F, fig.align = "center", fig.height=1, fig.width=8}
+knitr::include_graphics("plots/18_scree_wb_cr.jpeg")
+knitr::include_graphics("plots/18_heatplot_wb_cr.jpeg")
+```
+
+&nbsp;
+&nbsp;
+
+**PBMC**
+```{r Fig18-2, echo=F, fig.align = "center", fig.height=1, fig.width=8}
+knitr::include_graphics("plots/18_scree_pbmc_cr.jpeg")
+knitr::include_graphics("plots/18_heatplot_pbmc_cr.jpeg")
+```
+
+&nbsp;
+&nbsp;
+
+**BEC**
+```{r Fig18-3, echo=F, fig.align = "center", fig.height=1, fig.width=8}
+# BEC
+knitr::include_graphics("plots/18_scree_bu_cr.jpeg")
+knitr::include_graphics("plots/18_heatplot_bu_cr.jpeg")
+```
+**Figure 18**  Heat-scree plot on the pre-processed, normalized, batch-corrected, and cell-type deconvoluted DNAm dataset.
+
+After cell-type deconvolution, the beta-value distributions were shown in **Figure 19**. Note that the patient's DNAm profile showed global hypermethylation in comparison to other samples in WB, but not in PBMC or BEC. This was especially interesting given that the effect of cell type had been regressed out. If downstream analyses also support that the patient's WB sample deviate significantly from the reference in WB but not the other two tissues, then I will delve further into the possibility of tissue-specific effects of disease on DNA methylome. Besides, there is one sample in PBMC that shows significant global hypermethylation and one in BEC that has a distinct right shift. I will also explore those samples' identity to see why that exhibit these patterns. 
+
+**WB**
+```{r Fig19-1, echo=F, fig.align = "center", fig.height=1, fig.width=8}
+# WB
+knitr::include_graphics("plots/19_bdis_disease_wb.jpeg")
+```
+
+&nbsp;
+&nbsp;
+
+**PBMC**
+```{r Fig19-2, echo=F, fig.align = "center", fig.height=1, fig.width=8}
+# PBMC
+knitr::include_graphics("plots/19_bdis_disease_pbmc.jpeg")
+```
+
+&nbsp;
+&nbsp;
+
+**BEC**
+```{r Fig19-3, echo=F, fig.align = "center", fig.height=1, fig.width=8}
+# BEC
+knitr::include_graphics("plots/19_bdis_disease_bu.jpeg")
+```
+**Figure 19**  Beta-value distributions of WB, PBMC, and BEC post-probe-filtering, normalization, batch correction, and cell-type deconvolution.
+
+&nbsp;
+&nbsp;
+
+###D. Sibling Pair Direct Comparison: After Cell Type Correction
+
+After cell type correction, I re-examined the relationship between the DNAm profile of the patient and the sibling. As shown in **Figure 20**, after correction, the relationship better resembled a linear relationship, as one typically sees when plotting the DNAm of two independent individuals. Additionally, in **Figure 21** I showed that that step significantly increased sample correlation of the sibling pairs, bringing the Pearson's r up to 0.995, which was slightly higher the standard correlation coefficient of r = 0.990-0.994 for unrelated samples. 
+
+```{r Fig20, echo=F, fig.align = "center", fig.height=1, fig.width=8}
+knitr::include_graphics("plots/20_sibling_corr_cr.jpeg")
+```
+**Figure 20**  Beta values of all 405,686 CpG sites of the patient and the sibling BECs. Each light blue dot represented a methylation sites, with the x-axis corresponding to the patient's beta value and y-axis corresponding to that of the sibling. The dark blue line was the best fit line of all the data points using the loess method. 
+
+```{r Fig21, echo=F, fig.align = "center", fig.height=1, fig.width=8}
+knitr::include_graphics("plots/21_cor_rmse_sib_pair.jpeg")
+```
+**Figure 21**  Pearson’s coefficient (r) and rmse of the patient and the sibling’s BECs throughout major preprocessing steps.
+
+
+&nbsp;
+&nbsp;
+
+***
+
+##2. Reference Mapping at Candidate Genes
+
+###A. ASXL-associated differential methylation
+
+Literature has shown that, in the case of myeloproliferative neoplasms (MPNs), patients with *ASXL1* mutation have distinct differential methylation patterns **[5, 6]**. Even though in this case the patient did not suffer from MPNs, it would still be interesting to see whether any of the differential methylated sites (DMs) is observed in her samples. I visually examined the candidate genes identified in the Nielsen *et al.* paper’s supplementary table 7. **Figure 22** showed the methylation beta values of the healthy reference (gray), ASXL1 patient (orange), and the sibling control (green) if her sample is available. When the patient's beta value at a given site is higher or lower than that of all other samples, her sample is considered to be hyper- or hypo-methylated at this CpG. Please note that this method is in no way quantitative. In WB, *BCL6*, *DIRC2*, *RASSF1*, *PRAP1*, *TFAP2A*, and *TRPM2* were hypermethylated whereas *ICAM4* and *TNXB* were hypomethylated at some sites. In *BEC*, *BCL6*, *PRAP1*, and *TFAP2A* were hypermethylated and also hypomethylated in *BCL6* and *TFAP2A*. It is interesting to note that the trends persist across tissues, such as the hypermethylated region in *PRAP1*. In PBMC, the patient's DNAm did not deviate significantly from the reference, with hypermethylation at *BCL6* and hypomethylation at *BCL6* and *DIRC2* (not shown). 
+
+**WB**
+```{r Fig22-1, echo=F, fig.align = "center", fig.height=1, fig.width=8}
+knitr::include_graphics("plots/22_asxl1_wb_cr.jpeg")
+```
+
+&nbsp;
+&nbsp;
+
+**BEC**
+```{r Fig22-2, echo=F, fig.align = "center", fig.height=1, fig.width=8}
+knitr::include_graphics("plots/22_asxl1_bu_cr.jpeg")
+```
+**Figure 22** Reference mapping of patient DNAm at 9 candidate gene regions. The y-axis is the beta values of measured CpGs and x-axis is the gene coordinates of the CpGs on chromosomes. Each data point represented the betas of the patient (orange), sibling control (green), and reference samples (gray) at a given methylation site. 
+
+These plots gave us a rough idea of the patient’s DMs. However, it is difficult to draw conclusion on the role of a few DMs on the molecular function of these candidate genes. Therefore, the next step was to scan through the whole genome to identify DMs between the patient and the healthy population, which will allow us to extrapolate the set of genes involved in the disease. 
+
+&nbsp;
+&nbsp;
+
+***
+
+##3. Global Detection of Differentially Methylated Regions
+
+Given that it is difficult to perform statistical analysis with one group of a sample size of one, I tried several approaches to identify DM globally. First, I leveraged the sibling's buccal samples and examined the sites with the highest absolute differences. Next, I calculated an inter-quantile range (IQR) of each CpG for the healthy reference and identify regions in the genome where the patient's DNAm deviate from the "healthy range". 
+
+###A. Direct comparison of the patient and the sibling samples
+
+I compared the cell-type corrected DNAm profile of the patient and the unaffected sibling by direct subtraction of their methylation data matrices. It is valid to directly subtract the measured methylation status because the beta values always range from 0 to 1, representing the percentage of methylation in a mixture of cells. The resulted vector reflected the difference in methylation level between the two individuals. I then mapped the top DMs on to the corresponding genes and plotted the top 8 in **Figure 23**. 
+```{r Fig23, echo=F, fig.align = "center", fig.height=1, fig.width=8}
+knitr::include_graphics("plots/23_topdiff_bu_cr.jpeg")
+```
+**Figure 23** Reference mapping of patient and control DNAm at 8 genes with most differentially methylated CpGs. 
+
+Exploring these DM sites at the single gene level provides granularity but lacks interpretive power. It is difficult to attribute the effect of one differentially methylated probe on gene activity or to look at each gene's function and go through them one by one. Therefore, I performed gene enrichment analyses to see which gene sets or pathways were associated with the DMs. I used the *gometh* function in *missMethyl* R package, which accounts for probe backgrounds and CpG density when calculating the significance of gene ontology (GO) / KEGG enrichment **[19]**. Gene enrichment analysis was conducted on CpGs with beta values that differ by at least 0.1. Thirty-seven GO terms under the biological process category passed a false discovery rate (FDR) cutoff of 0.2 and the top 20 are shown in **Table 1**. Most of them were related to cell-type-specific immune response. 
+Gene enrichment based on the Kyoto Encyclopedia of Genes and Genomes (KEGG) database typically yields fewer results. The most enriched pathways with an FDR less than 0.2 was shown in **Table 2**. The relevance of the most enriched pathways was less apparent than that of the GO analysis. I am curious about your clinical insights on the relevance of each of these pathways.
+
+**Table 1** Top 20 most enriched GO terms under the biological process (BP) category, generated from the top DMs of the sibling pairs' buccal samples. N is the number of CpGs in this GO term, and DE is the number of differentially methylation CpGs in each GO term. P.DE is the probability of observing this number of CpGs as differentially methylated is the GO term is not over-represented, and FDR is the false discovery rate as calculated with the Benjamini and Hochberg method.
+```{r Table1, echo=F}
+load("RData/101-topdiff_enrichment.RData")
+kable(topdiff.topgo) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"))
+```
+
+**Table 2** Enriched KEGG pathway that passed an FDR cutoff of 0.2, generated from top DMs of the sibling pairs' buccal samples. The columns are as explained in Table 1. 
+```{r Table2, echo=F}
+kable(topdiff.topkegg) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"))
+```
+
+One advantage of direct comparison between the sibling pair is that the generation of the reference is not necessary. Also, the genetics background is partly controlled. However, if direct comparison with the sibling or other control samples is desired, purified cell type will be more appropriate, given that it is more difficult to correct for cell type with few samples. Additionally, it is extremely challenging to distinguish true signals from technical noises due to the very limited statistical power of a two-sample comparison. 
+
+&nbsp;
+&nbsp;
+
+###B. Mapping patient's DNAm to a reference "healthy range"
+
+Next, to gain confidence in the deciding what is considered to be differentially methylated, I returned to the reference methylome to compute the inter-quantile range (IQR) between the 2.5 to 97.5 percentile of the beta values at each CpG, which will be interpreted as the "healthy range" of methylation status. The patient's methylome was mapped to the reference range and a site was considered to be differentially methylated if it falls outside the IQR. In the BEC samples, I only called a site a DM site if the patient's beta value lies outside the IQR and the sibling's do not. However, it was interesting to note that the DM sites of the patient and that of the sibling never overlapped. We did not have the sibling's sample in WB, so for WB I did not try to filter based on the sibling's DM patterns. 
+*34,584* CpG sites in BEC and *88,245* in WB were differentially methylated for the patient. Again, I performed gene enrichment analysis to identify GO terms and KEGG pathways that were enriched with this reference mapping approach. This time, most of enriched GO terms were associated with metabolic functions, whereas the enriched KEGG pathways were related to viral infection and cell cycle regulation (**Table 3, 4**). The enrichment was interesting and they somewhat related to the patient's symptoms, but it was unclear to me why did this approach and that described in 3A yielded drastically different gene enrichment results. Additionally, the enrichment result for WB was quite similar to that in BEC, as shown in **Table 5 and 6**, despite a large difference in the number of DM sites.
+
+**Table 3** Top 20 most enriched GO terms under the biological process (BP) category, generated from the differentially methylated sites based on reference IQR mapping in BEC. The columns were as explained in Table 1. 
+```{r Table3, echo=F}
+load("RData/102-gmIQR_enrichment_bu_wb.RData")
+kable(gm.bu.topgo) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"))
+```
+
+**Table 4** Enriched KEGG pathway that passed an FDR cutoff of 0.2, generated from the differentially methylated sites based on reference IQR mapping in BEC. The columns were as explained in Table 1. 
+```{r Table4, echo=F}
+kable(gm.bu.topkegg) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"))
+```
+
+**Table 5** Top 20 most enriched GO terms under the biological process (BP) category, generated from the differentially methylated sites based on reference IQR mapping in WB. 
+```{r Table5, echo=F}
+kable(gm.wb.topgo) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"))
+```
+
+**Table 6** Enriched KEGG pathway that passed an FDR cutoff of 0.2, generated from the differentially methylated sites based on reference IQR mapping in WB. 
+```{r Table6, echo=F}
+kable(gm.wb.topkegg) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"))
+```
+
+&nbsp;
+&nbsp;
+
+###C. Identifications of differentially methylated regions (DMR)
+
+Finally, instead of looking DM pattern at the single CpG level, I divided up the CpGs on the EPIC array into regions based on the chromosome and gene coordinates. If two methylation sites are on the same chromosome and the distance between them is shorter than 1000bp, then they are considered to be in the same region. The 1000bp cutoff was chosen because of previous finding that the beta levels of CpGs less than 1kbp away are highly correlated **[21]**. I then looked for the regions with multiple DMs, as defined in 3B. In BEC, the longest differentially methylated regions (DMRs) had 4 CpGs. These were shown in **Figure 24**. In WB, the longest DMR had 5 CpGs and those were shown in **Figure 25**. 
+
+```{r Fig24, echo=F, fig.align = "center", fig.height=1, fig.width=8}
+knitr::include_graphics("plots/24_gm_4DMR_bu_cr.jpeg")
+```
+**Figure 24**  DMRs in BECs with at least 4 DMs as defined by mapping patient DNAm to reference IQR. Each data point represented the betas of the patient (orange), sibling control (green), and reference samples (gray) at a given methylation site. 
+
+&nbsp;
+&nbsp;
+
+```{r Fig25, echo=F, fig.align = "center", fig.height=1, fig.width=8}
+knitr::include_graphics("plots/25_gm_5DMR_wb_cr.jpeg")
+```
+**Figure 25**  DMRs in WB with at least 5 DMs as defined by mapping patient DNAm to reference IQR. Each data point represented the betas of the patient (orange) and reference samples (gray) at a given methylation site.
+
+I repeated the gene enrichment analysis on only the DMRs (regions with 2+ CpGs) because DMRs are more likely to reflect differential transcription factor binding and gene expression than DMs. There were 5,243 methylated sites in DMRs in BEC and 25,187 in WB DMRs. The enrichment results in BEC were shown in **Table 7-8** and that in WB were shown in **Table 9-10**. This time, in BEC, angiogenesis, apoptotosis, and metabolic processes were the most enriched GO terms, and there were minimal changes in the KEGG enrichment results. In WB, development-related GO terms were more highly enriched and cancer-related pathways was more abundant in KEGG pathway enrichment. 
+
+**Table 7** Top 20 most enriched GO terms under the biological process (BP) category, generated from the DMRs based on reference IQR mapping in BEC. 
+```{r Table7, echo=F}
+load("RData/103-gmIQR_DMR_enrichment_bu_wb.RData")
+kable(gmdmr.bu.topgo) %>%
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"))
+```
+
+**Table 8** Enriched KEGG pathway that passed an FDR cutoff of 0.2, generated from the DMRs based on reference IQR mapping in BEC. 
+```{r Table8, echo=F}
+kable(gmdmr.bu.topkegg) %>%
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"))
+```
+
+**Table 9** Top 20 most enriched GO terms under the biological process (BP) category, generated from the DMRs based on reference IQR mapping in WB.
+```{r Table9, echo=F}
+kable(gmdmr.wb.topgo) %>%
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"))
+```
+ 
+**Table 10** Enriched KEGG pathway that passed an FDR cutoff of 0.2, generated from the DMRs based on reference IQR mapping in WB. 
+```{r Table10, echo=F}
+kable(gmdmr.wb.topkegg) %>%
+    kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"))
+```
+
+The viral infection term showed up consistently in the KEGG pathway enrichment analysis. This can potentially be concerning if the function does not correct for background signal appropriately, leading to consistent false positive results irrespective of the list of CpGs tested. As an immediate next step, I will perform permutation test of a random subset of CpGs, the same number as that was input in the actual enrichment analyses, to see which terms are consistently listed as highly enriched even though it is a random draw. 
+
+&nbsp;
+&nbsp;
+
+***
+
+&nbsp;
+&nbsp;
+
+# **Future Direction**
+
+##1. Incorporation of Additional Datasets 
+
+Examine information like genomic regions, transcription factor binding sites, chromatin state, to see if we can further explore the underlying biology associted with the DMs. Also, I would like to map to existing public RNA-seq or CHIP-seq data on samples with *ASXL1* mutations on to the DNAm finding. One RNA-seq dataset on EML cell lines is available on GEO (Accession number GSE65555) **[21]**.
+
+##2. Apply the reference to other diseases/cases
+
+As previously mentioned in the email, we have samples from a pair of dimorphic monozygotic twins. Samples were collected when the twins were 3 years old. One of the twins suffered from aortic stenosis while the other did not. I would like to apply the same method to understand the role of epigenetics in disease development. 
+
+##3. Saliva Reference
+
+We also have the patient and the sibling's saliva samples. However, currently there are no reference dataset for saliva cell type deconvolution. This poses additional difficulties in estimating the cell-type proportion in saliva samples. However, this can also be very exciting as saliva is the least intrusive and most readily available sample collection method.  
+
+&nbsp;
+&nbsp;
+
+***
+
+&nbsp;
+&nbsp;
+
+# **References**
+
+**[1]** Gelsi-Boyer, V., Brecqueville, M., Devillier, R., Murati, A., Mozziconacci, M. J., *et al* (2012). Mutations in ASXL1 are associated with poor prognosis across the spectrum of malignant myeloid diseases. *Journal of hematology & oncology*, **5(1)**, 12.
+
+**[2]** Chittock, E. C., Latwiel, S., Miller, T. C., & Müller, C. W. (2017). Molecular architecture of polycomb repressive complexes. *Biochemical Society Transactions*, **45(1)**, 193-205.
+
+**[3]** Abdel-Wahab, O., Adli, M., LaFave, L. M., Gao, J., Hricik, T., *et al* (2012). ASXL1 mutations promote myeloid transformation through loss of PRC2-mediated gene repression. Cancer cell, 22(2), 180-193.
+
+**[4]** Scheuermann, J. C., de Ayala Alonso, A. G., Oktaba, K., Ly-Hartig, N., McGinty, R. K., *et al* (2010). Histone H2A deubiquitinase activity of the Polycomb repressive complex PR-DUB. *Nature*, **465(7295)**, 243.
+
+**[5]** Nischal, S., Bhattacharyya, S., Christopeit, M., Yu, Y., Zhou, L., *et al* (2013). Methylome profiling reveals distinct alterations in phenotypic and mutational subgroups of myeloproliferative neoplasms. *Cancer research*, **73(3)**, 1076-1085.
+
+**[6]** Nielsen, H. M., Andersen, C. L., Westman, M., Kristensen, L. S., Asmar, F., *et al* (2017). Epigenetic changes in myelofibrosis: Distinct methylation changes in the myeloid compartments and in cases with ASXL1 mutations. *Scientific reports*, **7(1)**, 6774.
+
+**[7]** Pidsley, R., Zotenko, E., Peters, T. J., Lawrence, M. G., Risbridger, G. P., Molloy, P., ... & Clark, S. J. (2016). Critical evaluation of the Illumina MethylationEPIC BeadChip microarray for whole-genome DNA methylation profiling. *Genome biology*, **17(1)**, 208.
+
+**[8]** Bibikova, M., Barnes, B., Tsan, C., Ho, V., Klotzle, B., Le, J. M., ... & Fan, J. B. (2011). High density DNA methylation array with single CpG site resolution. *Genomics*, **98(4)**, 288-295.
+
+**[9]** Horvath S. (2013) DNA methylation age of human tissues and cell types. *Genome Biol.* **14**, R115.
+
+**[10]** Hannum G, Guinney J, Zhao L, Zhang L, Hughes G, *et al*. (2013) Genome-wide methylation profiles reveal quantitative views of human aging rates. *Mol Cell.* **49**:359-367.
+
+**[11]** Benjamini, Y., & Hochberg, Y. (1995). Controlling the false discovery rate: a practical and powerful approach to multiple testing. *Journal of the Royal statistical society: series B (Methodological)*, **57(1)**, 289-300.
+
+**[12]** Teschendorff AE, Marabita F, Lechner M, Bartlett T, Tegner J, *et al*. (2013) A beta-mixture quantile normalization method for correcting probe design bias in Illumina Infinium 450 k DNA methylation data. *Bioinformatics.* **29**, 189-196.
+
+**[13]** Du P, Zhang X, Huang CC, Jafari N, Kibbe WA, *et al*. (2010) Comparison of Beta-value and M-value methods for quantifying methylation levels by microarray analysis. *BMC Bioinformatics.* **11**, 587.
+
+**[14]** Johnson WE, Rabinovic A, and Li C. (2007) Adjusting batch effects in microarray expression data using Empirical Bayes methods. *Biostatistics.* **8**, 118-127.
+
+**[15]** Leek, J. T., Johnson, W. E., Parker, H. S., Jaffe, A. E., & Storey, J. D. (2012). The sva package for removing batch effects and other unwanted variation in high-throughput experiments. *Bioinformatics*, **28(6)**, 882-883.
+
+**[16]** Jones MJ, Islam SA, Edgar RD, and Kobor MS. (2017) Adjusting for Cell Type Composition in DNA Methylation Data Using a Regression-Based Approach. *Methods Mol Biol.* **1589**, 99-106.
+
+**[17]** Houseman EA, Accomando WP, Koestler DC, Christensen BC, Marsit CJ, *et al*. (2012) DNA methylation arrays as surrogate measures of cell mixture distribution. *BMC Bioinformatics.* **13**, 86. 
+
+**[18]** Teschendorff, A. E., Breeze, C. E., Zheng, S. C., & Beck, S. (2017). A comparison of reference-based algorithms for correcting cell-type heterogeneity in Epigenome-Wide Association Studies. *BMC Bioinformatics*, **18(1)**, 105.
+
+**[19]** Phipson, B., Maksimovic, J., & Oshlack, A. (2015). missMethyl: an R package for analyzing data from Illumina’s HumanMethylation450 platform. *Bioinformatics*, **32(2)**, btv560.
+
+**[20]** Eckhardt, F., Lewin, J., Cortese, R., Rakyan, V. K., Attwood, J., Burger, M., … Beck, S. (2006). DNA methylation profiling of human chromosomes 6, 20 and 22. *Nature Genetics*, **38(12)**, 1378–1385.
+
+**[21]** Balasubramani, A., Larjo, A., Bassein, J. A., Chang, X., Hastie, R. B., Togher, S. M., … Rao, A. (2015). Cancer-associated ASXL1 mutations may act as gain-of-function mutations of the ASXL1–BAP1 complex. *Nature Communications*, **6(1)**, 7307.

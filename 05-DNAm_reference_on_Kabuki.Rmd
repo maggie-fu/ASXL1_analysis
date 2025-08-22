@@ -1,0 +1,738 @@
+---
+title: "Kabuki"
+author: "Maggie Fu"
+date: "12/5/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+setwd("~/maggie.fu/Projects/Biggs/")
+
+library(dplyr)
+library(sva)
+library(lumi)
+library(methylumi)
+library(EpiDISH)
+library(compositions)
+library(missMethyl)
+library(IlluminaHumanMethylation450kanno.ilmn12.hg19)
+library(limma)
+
+# In-house scripts
+source("~/maggie.fu/Functions/PreprocessScripts.R")
+```
+
+## Try to apply the same method on Kabuki Syndrome patients
+
+### Batch correction
+
+```{r}
+load("RData/05-normalized.RData")
+
+meta <- pData(MLset.N)
+
+# Subset out only blood & buccal and healthy + mut sample to make batch correction better
+MLset.N <- MLset.N[, sampleNames(MLset.N) %in% rownames(meta)[meta$Tissue %in% c("BEC", "PBMC", "WB")]]
+meta <- pData(MLset.N)
+meta$Sentrix_Position <- as.character(meta$Sentrix_Position)
+meta$Sentrix_row <- sapply(1:nrow(meta), function(x) strsplit(as.character(meta$Sentrix_Position[x]), split = "C")[[1]][1])
+levels(meta$Sentrix_row) <- c(1,2,3,4,5,6,7,8)
+meta[meta$Individual == "Ctrl" & !is.na(meta$Individual), "Disease_Status"] <- "Healthy"
+meta[grep("GSE97362", meta$Cohort), "Disease_Subgroup"] <- meta[grep("GSE97362", meta$Cohort), "Sample_ID"]
+meta[grep("CHD", meta$Sample_ID), "Disease_Status"] <- "CHARGE"
+meta[grep("KMT", meta$Sample_ID), "Disease_Status"] <- "Kabuki"
+meta[grep("KDM", meta$Sample_ID), "Disease_Status"] <- "Kabuki"
+pData(MLset.N) <- meta
+MLset.N <- MLset.N[, sampleNames(MLset.N) %in% rownames(meta[meta$Disease_Status %in% c("Healthy", "Crohn's disease", "Kabuki", "CHARGE", "FASD", "ASXL1"), ])]
+
+meta <- pData(MLset.N)
+meta_categorical <- meta[, c("Cohort", "Platform_ID", "Sentrix_ID", "Sentrix_row", "Tissue", "Sex", "Disease_Status")] 
+colnames(meta_categorical) <- c("Cohort", "Platform", "Barcode", "Barcode Position", "Tissue", "Sex", "Disease Status")
+meta_continuous <- meta[, c("Age"), drop = F] 
+colnames(meta_continuous) <- "Age"
+heat_scree_plot(MLset.N)
+PCA_Plot(prcomp(MLset.N))
+
+# Try out sparse PCA... Take forever and ever
+#sPCA <- nsprcomp(betas(MLset.N), scale. = TRUE)
+#PCAC <- prcomp(betas(MLset.C))
+#PCA_Plot(PCAC)
+
+# Batch correction
+MLset.C <- MLset.N
+meta <- pData(MLset.C) 
+
+#Combat - only tissue protected
+mod <- model.matrix(~ as.factor(Tissue), data = meta)
+M_c1 <- ComBat(beta2m(betas(MLset.C)), batch = meta$Cohort, mod = mod)
+M_c2 <- ComBat(M_c1, batch = meta$Platform_ID, mod = mod)
+# Use SVA to remove other batch effect (SentrixID and row missing from some cohorts)
+mod0 <- model.matrix(~1, data = meta)
+# (n.sv <- num.sv(M_c2, mod, method = "leek"))
+n.sv <- 2
+svobj.t <- sva(M_c2, mod, mod0, n.sv = n.sv)
+betas(MLset.C) <- m2beta(M_c2)
+MLset.C.t <- MLset.C
+heat_scree_plot(MLset.C.t)
+
+
+#Combat - tissue and disease protected
+mod <- model.matrix(~ as.factor(Tissue) + as.factor(Disease_Status), data = meta)
+M_c1 <- ComBat(beta2m(betas(MLset.C)), batch = meta$Cohort, mod = mod)
+M_c2 <- ComBat(M_c1, batch = meta$Platform_ID, mod = mod)
+# Use SVA to remove other batch effect (SentrixID and row missing from some cohorts)
+mod0 <- model.matrix(~1, data = meta)
+# (n.sv <- num.sv(M_c2, mod, method = "leek"))
+n.sv <- 2
+svobj.td <- sva(M_c2, mod, mod0, n.sv = n.sv)
+betas(MLset.C) <- m2beta(M_c2)
+MLset.C.td <- MLset.C
+heat_scree_plot(MLset.C.td)
+
+save(MLset.C.t, svobj.t, file = "RData/301-NEW_batch_corrected_tissue_protected.RData")
+save(MLset.C.td, svobj.td, file = "RData/301-NEW_batch_corrected_tissue_disease_protected.RData")
+```
+
+```{r}
+load("RData/301-NEW_batch_corrected_tissue_protected.RData")
+load("RData/301-NEW_batch_corrected_tissue_disease_protected.RData")
+
+# Sanity Check
+meta <- pData(MLset.N)
+meta <- pData(MLset.C.t)
+meta <- pData(MLset.C.td)
+
+Loadings.N <- prcomp(betas(MLset.N)) %>% .$rotation %>% unclass() %>% as.data.frame()
+Loadings.C <- prcomp(betas(MLset.C.td)) %>% .$rotation %>% unclass() %>% as.data.frame()
+PC_F <- cbind(Loadings.N[, 1:10], meta[, c("Cohort", "Platform_ID", "Sentrix_ID", "Sentrix_row", "Sex", "Tissue", "Disease_Status")])
+PC_F <- cbind(Loadings.C[, 1:10], meta[, c("Cohort", "Platform_ID", "Sentrix_ID", "Sentrix_row", "Sex", "Tissue", "Disease_Status")])
+ggplot(PC_F, aes(PC1, PC2, color = Cohort)) + geom_point() + theme_bw()
+ggplot(PC_F, aes(PC1, PC2, color = Platform_ID)) + geom_point() + theme_bw()
+ggplot(PC_F, aes(PC1, PC2, color = Sentrix_row)) + geom_point() + theme_bw()
+ggplot(PC_F, aes(PC1, PC2, color = Sex)) + geom_point() + theme_bw()
+ggplot(PC_F, aes(PC1, PC2, color = Tissue)) + geom_point() + theme_bw()
+ggplot(PC_F, aes(PC1, PC2, color = Disease_Status)) + geom_point() + theme_bw()
+```
+
+```{r}
+# See if Sentrix ID / row are correlated with either SV
+colnames(svobj.td$sv) <- c("sv1", "sv2")
+meta <- pData(MLset.C.td)
+meta <- cbind(meta, svobj.td$sv) %>% as.data.frame()
+pData(MLset.C.td) <- meta
+
+aov(meta$sv1 ~ meta$Sentrix_ID + meta$Sentrix_row) %>% summary()
+#                   Df  Sum Sq   Mean Sq F value Pr(>F)
+# meta$Sentrix_ID  133 0.31132 0.0023408   3.640 <2e-16 ***
+# meta$Sentrix_row   7 0.00598 0.0008538   1.328  0.236
+aov(meta$sv2 ~ meta$Sentrix_ID + meta$Sentrix_row) %>% summary()
+#                   Df Sum Sq   Mean Sq F value Pr(>F)
+# meta$Sentrix_ID  133 0.4101 0.003084   3.061 < 2e-16 ***
+# meta$Sentrix_row   7 0.0218 0.003110   3.087 0.00361 ** 
+
+
+# meta <- pData(MLset.C.bl)
+# sv <- svobj.t$sv[sampleNames(MLset.C) %in% sampleNames(MLset.C.bl), ] %>% as.data.frame()
+# rownames(sv) <- rownames(meta)
+# meta <- cbind(meta, sv)
+# pData(MLset.C.bl) <- meta
+ggplot(meta, aes(sv1, sv2, color = Sentrix_ID)) + geom_point()
+ggplot(meta, aes(sv1, sv2, color = Sentrix_row)) + geom_point()
+ggplot(meta, aes(sv1, sv2, color = Tissue)) + geom_point()
+
+with(meta, aov(sv1 ~ Epi + Fib + B + NK + CD4T + CD8T + Mono + Neutro + Eosino)) %>% summary()
+with(meta, aov(sv2 ~ Epi + Fib + B + NK + CD4T + CD8T + Mono + Neutro + Eosino)) %>% summary()
+
+# Given that sv1 and sv2 are significantly associated with Sentrix ID and Sentrix row, we will use them as proxy for those measures, and adjust them with combat
+mod <- model.matrix(~ as.factor(Tissue) + as.factor(Disease_Status), data = meta)
+# M_c3 <- ComBat(M_c2, batch = meta$Sentrix_ID, mod = mod)
+# M_c4 <- ComBat(M_c3, batch = meta$Platform_ID, mod = mod)
+# Cannot do it because svs are continuous variables -> will regress out with cell type
+
+save(MLset.C.t, svobj.t, file = "RData/301-NEW_batch_corrected_tissue_protected.RData")
+save(MLset.C.td, svobj.td, file = "RData/301-NEW_batch_corrected_tissue_disease_protected.RData")
+```
+
+
+### Cell type estimation - tissue only
+
+```{r}
+load("RData/301-NEW_batch_corrected_tissue_protected.RData")
+source('~/KoborLab/kobor_space/shared_coding_resource/PCA_Plot_Function.R')
+
+MLset.C <- MLset.C.t
+
+# Cell-type estimation
+meta <- pData(MLset.C)
+pData(MLset.C) <- meta[, 1:25]
+
+MLset.C.bl <- MLset.C[, sampleNames(MLset.C) %in% rownames(meta[meta$Tissue %in% c("WB", "PBMC"), ])]
+celltype <- ECC9(betas(MLset.C.bl), tissueType = "blood")
+ECCcounts <- as.data.frame(celltype$counts)
+if (identical(sort(rownames(ECCcounts)), sort(rownames(pData(MLset.C.bl))))){
+    meta <- cbind(pData(MLset.C.bl), ECCcounts[rownames(pData(MLset.C.bl)), ])
+    if (identical(rownames(meta), rownames(pData(MLset.C.bl)))){
+        pData(MLset.C.bl) <- meta
+    } else stop("The sample names do not match")
+} else stop("The sample names are not the same")
+
+MLset.C.wb <- MLset.C.bl[, pData(MLset.C.bl)$Tissue == "WB"]
+MLset.C.pbmc <- MLset.C.bl[, pData(MLset.C.bl)$Tissue == "PBMC"]
+
+#Heatscree
+meta <- pData(MLset.C.wb)
+meta_categorical <- meta[, c("Cohort", "Platform_ID", "Sentrix_ID", "Sentrix_row", "Sex", "Disease_Status")] 
+colnames(meta_categorical) <- c("Cohort", "Platform", "Barcode", "Barcode Position", "Sex", "Disease Status")
+meta_continuous <- meta[, c("Age", "Bcell", "NK", "CD4T", "CD8T", "Mono", "Gran", "sv1", "sv2")] 
+PCA.wb <- prcomp(betas(MLset.C.wb))
+PCA_Plot(PCA.wb)
+
+meta <- pData(MLset.C.pbmc)
+meta_categorical <- meta[, c("Cohort", "Sentrix_ID", "Sentrix_row", "Sex", "Disease_Status")] 
+colnames(meta_categorical) <- c("Cohort", "Barcode", "Barcode Position", "Sex", "Disease Status")
+meta_continuous <- meta[, c("Age", "Bcell", "NK", "CD4T", "CD8T", "Mono", "Gran", "sv1", "sv2")] 
+PCA.pbmc <- prcomp(betas(MLset.C.pbmc))
+PCA_Plot(PCA.pbmc)
+
+# Blood
+BloodPlot(MLset.C.wb, "Sex", "categorical", premethod = "ECC")
+BloodPlot(MLset.C.wb, "Disease_Status", "categorical", premethod = "ECC")
+BloodPlot(MLset.C.pbmc, "Disease_Status", "categorical", premethod = "ECC")
+BetaPlot(MLset.C.bl, "Cohort")
+
+# Epidish
+data(centDHSbloodDMC.m) 
+data(centEpiFibIC.m)
+data(DummyBeta.m)
+
+counts <- hepidish(betas(MLset.C), ref1.m = centEpiFibIC.m, ref2.m = centBloodSub.m, h.CT.idx = 3, method = "CP")
+frac.p <- melt(counts) #Calls out the estimates
+(plot <- ggplot(frac.p, aes(Var2, value)) + geom_boxplot() + geom_point())
+if (identical(sort(rownames(counts)), sort(rownames(pData(MLset.C))))){
+    meta <- cbind(pData(MLset.C), counts[rownames(pData(MLset.C)), ])
+    if (identical(rownames(meta), rownames(pData(MLset.C)))){
+        pData(MLset.C) <- meta
+    } else stop("The sample names do not match")
+} else stop("The sample names are not the same")
+MLset.C.wb <- MLset.C[, pData(MLset.C)$Tissue == "WB"]
+#BetaPlot(MLset.C.wb, "Cohort")
+MLset.C.pbmc <- MLset.C[, pData(MLset.C)$Tissue == "PBMC"]
+#BetaPlot(MLset.C.pbmc, "Cohort")
+MLset.C.bu <- MLset.C[, pData(MLset.C)$Tissue == "BEC"]
+#BetaPlot(MLset.C.bu, "Cohort")
+
+# Check for cell type differences
+BloodPlot(MLset.C.wb, "Disease_Status", "categorical", premethod = "EPIDISH")
+BloodPlot(MLset.C.pbmc, "Disease_Status", "categorical", premethod = "EPIDISH")
+BloodPlot(MLset.C.bu, "Disease_Status", "categorical", premethod = "EPIDISH")
+
+
+save(MLset.C, MLset.C.bl, file = "RData/302-NEW_celltype_estimate_tissue.RData")
+#save(MLset.C, file = "RData/07-celltype_estimate_out_removed.RData")
+```
+
+
+### Cell type estimation - tissue + disease
+
+```{r}
+MLset.C <- MLset.C.td
+
+# Cell-type estimation
+meta <- pData(MLset.C)
+pData(MLset.C) <- meta[, 1:25]
+
+MLset.C.bl <- MLset.C[, sampleNames(MLset.C) %in% rownames(meta[meta$Tissue %in% c("WB", "PBMC"), ])]
+celltype <- ECC9(betas(MLset.C.bl), tissueType = "blood")
+ECCcounts <- as.data.frame(celltype$counts)
+if (identical(sort(rownames(ECCcounts)), sort(rownames(pData(MLset.C.bl))))){
+    meta <- cbind(pData(MLset.C.bl), ECCcounts[rownames(pData(MLset.C.bl)), ])
+    if (identical(rownames(meta), rownames(pData(MLset.C.bl)))){
+        pData(MLset.C.bl) <- meta
+    } else stop("The sample names do not match")
+} else stop("The sample names are not the same")
+
+MLset.C.wb <- MLset.C.bl[, pData(MLset.C.bl)$Tissue == "WB"]
+MLset.C.pbmc <- MLset.C.bl[, pData(MLset.C.bl)$Tissue == "PBMC"]
+
+#Heatscree
+meta <- pData(MLset.C.wb)
+meta_categorical <- meta[, c("Cohort", "Platform_ID", "Sentrix_ID", "Sentrix_row", "Sex", "Disease_Status")] 
+colnames(meta_categorical) <- c("Cohort", "Platform", "Barcode", "Barcode Position", "Sex", "Disease Status")
+meta_continuous <- meta[, c("Age", "Bcell", "NK", "CD4T", "CD8T", "Mono", "Gran", "sv1", "sv2")] 
+PCA.wb <- prcomp(betas(MLset.C.wb))
+PCA_Plot(PCA.wb)
+
+meta <- pData(MLset.C.pbmc)
+meta_categorical <- meta[, c("Cohort", "Sentrix_ID", "Sentrix_row", "Sex", "Disease_Status")] 
+colnames(meta_categorical) <- c("Cohort", "Barcode", "Barcode Position", "Sex", "Disease Status")
+meta_continuous <- meta[, c("Age", "Bcell", "NK", "CD4T", "CD8T", "Mono", "Gran", "sv1", "sv2")] 
+PCA.pbmc <- prcomp(betas(MLset.C.pbmc))
+PCA_Plot(PCA.pbmc)
+
+# Blood
+BloodPlot(MLset.C.wb, "Sex", "categorical", premethod = "ECC")
+BloodPlot(MLset.C.wb, "Disease_Status", "categorical", premethod = "ECC")
+BloodPlot(MLset.C.pbmc, "Disease_Status", "categorical", premethod = "ECC")
+BetaPlot(MLset.C.bl, "Cohort")
+
+# Epidish
+data(centDHSbloodDMC.m) 
+data(centEpiFibIC.m)
+data(DummyBeta.m)
+
+counts <- hepidish(betas(MLset.C), ref1.m = centEpiFibIC.m, ref2.m = centBloodSub.m, h.CT.idx = 3, method = "CP")
+frac.p <- melt(counts) #Calls out the estimates
+(plot <- ggplot(frac.p, aes(Var2, value)) + geom_boxplot() + geom_point())
+if (identical(sort(rownames(counts)), sort(rownames(pData(MLset.C))))){
+    meta <- cbind(pData(MLset.C), counts[rownames(pData(MLset.C)), ])
+    if (identical(rownames(meta), rownames(pData(MLset.C)))){
+        pData(MLset.C) <- meta
+    } else stop("The sample names do not match")
+} else stop("The sample names are not the same")
+
+MLset.C.wb <- MLset.C[, pData(MLset.C)$Tissue == "WB"]
+#BetaPlot(MLset.C.wb, "Cohort")
+MLset.C.pbmc <- MLset.C[, pData(MLset.C)$Tissue == "PBMC"]
+#BetaPlot(MLset.C.pbmc, "Cohort")
+MLset.C.bu <- MLset.C[, pData(MLset.C)$Tissue == "BEC"]
+#BetaPlot(MLset.C.bu, "Cohort")
+
+# Check for cell type differences
+BloodPlot(MLset.C.wb, "Disease_Status", "categorical", premethod = "EPIDISH")
+BloodPlot(MLset.C.pbmc, "Disease_Status", "categorical", premethod = "EPIDISH")
+BloodPlot(MLset.C.bu, "Disease_Status", "categorical", premethod = "EPIDISH")
+
+save(MLset.C, MLset.C.bl, file = "RData/302-NEW_celltype_estimate_tissue_disease.RData")
+#save(MLset.C, file = "RData/07-celltype_estimate_out_removed.RData")
+```
+
+### Check cell type estimate using raw data
+
+```{r}
+load("RData/03-all_GEO_reference.RData")
+
+# ECC
+meta <- pData(PedRef)
+pData(PedRef) <- meta[, 1:25]
+
+PedRef.bl <- PedRef[, sampleNames(MLset.C) %in% rownames(meta[meta$Tissue %in% c("WB", "PBMC"), ])]
+celltype <- ECC9(betas(PedRef.bl), tissueType = "blood")
+ECCcounts <- as.data.frame(celltype$counts)
+if (identical(sort(rownames(ECCcounts)), sort(rownames(pData(PedRef.bl))))){
+    meta <- cbind(pData(PedRef.bl), ECCcounts[rownames(pData(PedRef.bl)), ])
+    if (identical(rownames(meta), rownames(pData(PedRef.bl)))){
+        pData(PedRef.bl) <- meta
+    } else stop("The sample names do not match")
+} else stop("The sample names are not the same")
+
+PedRef.wb <- PedRef.bl[, pData(PedRef.bl)$Tissue == "WB"]
+PedRef.pbmc <- PedRef.bl[, pData(PedRef.bl)$Tissue == "PBMC"]
+
+BloodPlot(PedRef.wb, "Sex", "categorical", premethod = "ECC")
+BloodPlot(PedRef.wb, "Disease_Status", "categorical", premethod = "ECC")
+BloodPlot(PedRef.pbmc, "Disease_Status", "categorical", premethod = "ECC")
+BetaPlot(PedRef.bl, "Cohort")
+# hepidish
+counts <- hepidish(betas(PedRef), ref1.m = centEpiFibIC.m, ref2.m = centBloodSub.m, h.CT.idx = 3, method = "RPC")
+frac.p <- melt(counts) #Calls out the estimates
+(plot <- ggplot(frac.p, aes(Var2, value)) + geom_boxplot() + geom_point())
+if (identical(sort(rownames(counts)), sort(rownames(pData(PedRef))))){
+    meta <- cbind(pData(PedRef), counts[rownames(pData(PedRef)), ])
+    if (identical(rownames(meta), rownames(pData(PedRef)))){
+        pData(PedRef) <- meta
+    } else stop("The sample names do not match")
+} else stop("The sample names are not the same")
+BetaPlot(PedRef, "Tissue")
+BetaPlot(PedRef, "Cohort")
+
+PedRef.wb <- PedRef[, pData(PedRef)$Tissue == "WB"]
+#BetaPlot(PedRef.wb, "Cohort")
+PedRef.pbmc <- PedRef[, pData(PedRef)$Tissue == "PBMC"]
+#BetaPlot(PedRef.pbmc, "Cohort")
+PedRef.bu <- PedRef[, pData(PedRef)$Tissue == "BEC"]
+#BetaPlot(PedRef.bu, "Cohort")
+
+# Check for cell type differences
+BloodPlot(PedRef.wb, "Disease_Status", "categorical", premethod = "EPIDISH")
+BloodPlot(PedRef.pbmc, "Disease_Status", "categorical", premethod = "EPIDISH")
+BloodPlot(PedRef.bu, "Disease_Status", "categorical", premethod = "EPIDISH")
+```
+
+Celltype proportion was messed up in ASXL1 patient before batch correction, *will try to compare the result of preserving vs not perserving that cell type proportion*. 
+
+
+
+
+
+
+
+The following section aims to compare the two preprocessing methods (protect or not protect for disease status)
+
+
+
+### Regress out cell type
+
+```{r}
+load("RData/302-NEW_celltype_estimate_tissue.RData")
+load("RData/302-NEW_celltype_estimate_tissue_disease.RData")
+
+meta <- pData(MLset.C)
+meta[meta$Individual == "Ctrl" & !is.na(meta$Individual), "Disease_Status"] <- "Ctrl"
+pData(MLset.C) <- meta
+
+PedRef.wb <- MLset.C[, pData(MLset.C)$Tissue == "WB"]
+#BetaPlot(PedRef.wb, "Cohort")
+PedRef.pbmc <- MLset.C[, pData(MLset.C)$Tissue == "PBMC" & pData(MLset.C)$Disease_Status %in% c("Healthy", "Ctrl", "ASXL1")]
+#BetaPlot(PedRef.pbmc, "Cohort")
+PedRef.bu <- MLset.C[, pData(MLset.C)$Tissue == "BEC" & pData(MLset.C)$Disease_Status %in% c("Healthy", "Ctrl", "ASXL1")]
+#BetaPlot(PedRef.bu, "Cohort")
+
+
+# Check for cell type differences
+BloodPlot(PedRef.wb, "Disease_Status", "categorical", premethod = "EPIDISH")
+BloodPlot(PedRef.pbmc, "Disease_Status", "categorical", premethod = "EPIDISH")
+BloodPlot(PedRef.bu, "Disease_Status", "categorical", premethod = "EPIDISH")
+
+# deconvolute - performed separately for each tissue
+## Buccal
+counts <- pData(PedRef.bu)[, c("Epi", "Fib", "B", "NK", "CD4T", "CD8T", "Mono", "Neutro", "Eosino")]
+countsClr <- as.data.frame(clr(counts + 1)) %>% cbind(pData(PedRef.bu)[, c("sv1", "sv2")])
+countsPCA <- prcomp(countsClr, scale = T)
+blood <- as.data.frame(countsPCA$x)
+residuals <- t(apply(betas(PedRef.bu), 1, function(x){
+    residuals(summary(lm(x ~ PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data = blood)))
+    }))
+PedRef.bu.cr <- PedRef.bu
+adj.residuals <- residuals + matrix(apply(betas(PedRef.bu), 1, mean), nrow = nrow(residuals), ncol = ncol(residuals))
+adj.residuals[adj.residuals <= 0] <- 0.0001 # convert any values that are less than or equal to zero to 0.0001
+adj.residuals[adj.residuals > 1] <- 0.9999 # convert any values that are greater than 1 to 0.9999
+betas(PedRef.bu.cr) <- adj.residuals 
+
+counts <- hepidish(betas(PedRef.bu.cr), ref1.m = centEpiFibIC.m, ref2.m = centBloodSub.m, h.CT.idx = 3, method = "RPC") %>% as.data.frame(.)
+counts$Sample_ID <- rownames(counts)
+BloodPlot(PedRef.bu.cr, "Disease_Status", "categorical", premethod = "EPIDISH", counts)
+
+###################################################################################################
+
+MLset.C.wb <- MLset.C.bl[, pData(MLset.C.bl)$Tissue == "WB"]
+MLset.C.pbmc <- MLset.C.bl[, pData(MLset.C.bl)$Tissue == "PBMC"]
+
+# Try ECC-predicted blood cell proportion
+## WB
+counts <- pData(MLset.C.wb)[, c("Bcell", "NK", "CD4T", "CD8T", "Mono", "Gran")]
+countsClr <- as.data.frame(clr(counts + 1)) %>% cbind(pData(MLset.C.wb)[, c("sv1", "sv2")])
+countsPCA <- prcomp(countsClr, scale = T)
+blood <- as.data.frame(countsPCA$x)
+residuals <- t(apply(betas(PedRef.wb), 1, function(x){
+    residuals(summary(lm(x ~ PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7, data = blood)))
+    }))
+MLset.C.wb.cr <- MLset.C.wb
+adj.residuals <- residuals + matrix(apply(betas(PedRef.wb), 1, mean), nrow = nrow(residuals), ncol = ncol(residuals))
+adj.residuals[adj.residuals <= 0] <- 0.0001
+adj.residuals[adj.residuals > 1] <- 0.9999
+betas(MLset.C.wb.cr) <- adj.residuals 
+
+ECC <- ECC9(betas(MLset.C.wb.cr), tissueType = "blood")
+counts <- as.data.frame(ECC$counts)
+counts$Sample_ID <- rownames(counts)
+BloodPlot(MLset.C.wb.cr, "Disease_Status", "categorical", premethod = "ECC", counts)
+
+###################################################################################################
+
+### PBMC
+counts <- pData(MLset.C.pbmc)[, c("Bcell", "NK", "CD4T", "CD8T", "Mono", "Gran")]
+countsClr <- as.data.frame(clr(counts + 1)) %>% cbind(pData(MLset.C.pbmc)[, c("sv1", "sv2")])
+countsPCA <- prcomp(countsClr, scale = T)
+
+blood <- as.data.frame(countsPCA$x)
+residuals <- t(apply(betas(MLset.C.pbmc), 1, function(x){
+    residuals(summary(lm(x ~ PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7, data = blood)))
+    }))
+MLset.C.pbmc.cr <- MLset.C.pbmc
+adj.residuals <- residuals + matrix(apply(betas(MLset.C.pbmc), 1, mean), nrow = nrow(residuals), ncol = ncol(residuals))
+adj.residuals[adj.residuals <= 0] <- 0.0001
+adj.residuals[adj.residuals > 1] <- 0.9999
+betas(MLset.C.pbmc.cr) <- adj.residuals 
+
+ECC <- ECC9(betas(MLset.C.pbmc.cr), tissueType = "blood")
+counts <- as.data.frame(ECC$counts)
+counts$Sample_ID <- rownames(counts)
+BloodPlot(MLset.C.pbmc.cr, "Disease_Status", "categorical", premethod = "ECC", counts)
+
+# Rename MLset.C.pbmc.cr and MLset.C.wb.cr to PedRef.pbmc.cr and PedRef.wb.cr respectively
+# This will be the objects used from now on as the final pre-processed objects for all three tissues
+PedRef.pbmc.cr <- MLset.C.pbmc.cr
+PedRef.wb.cr <- MLset.C.wb.cr
+#save(PedRef.bu.cr, PedRef.pbmc.cr, PedRef.wb.cr, file = "Rdata/303-NEW_celltype_corrected_ECC.RData")
+#save(PedRef.bu.cr, PedRef.pbmc.cr, PedRef.wb.cr, file = "Rdata/303-NEW_celltype_corrected_ECC_tissue_disease.RData")
+
+#BetaPlot(PedRef.bu.cr, "Cohort")
+BetaPlot(PedRef.bu.cr, "Disease_Status")
+#BetaPlot(PedRef.wb.cr, "Cohort")
+BetaPlot(PedRef.wb.cr, "Disease_Status")
+#BetaPlot(PedRef.pbmc.cr, "Cohort")
+BetaPlot(PedRef.pbmc.cr, "Disease_Status")
+```
+
+```{r}
+load("RData/08-celltype_corrected_FINAL.RData")
+MLset.CC <- PedRef.bu.cr # Cell type corrected data
+load("RData/06-batch_corrected_tissue_protected.RData") # Batch corrected
+load("RData/05-normalized.RData") # Normalized
+load("RData/04-outliers_removed_probe_filtered.RData") # Probe filtered
+load("RData/03-all_GEO_reference.RData")
+MLset <- PedRef # Raw
+
+# Check for sibling sample correlation
+reps <- c("Pat_Buccal_1", "Ctrl_Buccal_2")
+RepCorTest(MLset, MLset.P, MLset.N, MLset.C, MLset.CC, labels = c("Raw Data", "Probe Filter", "Normalization", "Batch Corrected", "Cell Type Corrected"))
+
+# Check for tech rep correlation and remove them
+MLset.CC <- PedRef.pbmc.cr # Cell type corrected data
+(reps <- grep("Pat_PBMC_1", sampleNames(MLset.C), value = T) %>% sort(.) %>% .[1:2])
+RepCorTest(MLset, MLset.P, MLset.N, MLset.C, MLset.CC, labels = c("Raw Data", "Probe Filter", "Normalization", "Batch Corrected", "Cell Type Corrected"))
+
+reps <- grep("_REP", sampleNames(MLset.CC), value = T)
+PedRef.pbmc.cr <- PedRef.pbmc.cr[, !sampleNames(PedRef.pbmc.cr) %in% reps]
+
+```
+
+### Global detection for DMC: 
+Generate confidence interval for every CpG and see if the patient lies in there
+```{r}
+load("Rdata/303-NEW_celltype_corrected_ECC.RData")
+load("Rdata/303-NEW_celltype_corrected_ECC_tissue_disease.RData")
+
+# 1-sample t-test on buccal as well
+betas.bu <- betas(PedRef.bu.cr)
+betas.bu.pat <- betas(PedRef.bu.cr)[, "Pat_Buccal_1"]
+betas.bu.ctrl <- betas(PedRef.bu.cr)[, "Ctrl_Buccal_2"]
+betas.bu.ref <- betas(PedRef.bu.cr)[, pData(PedRef.bu.cr)$Disease_Status == "Healthy"]
+#betas.bu.ref <- cbind(betas.bu.ctrl, betas.bu.ref)
+betas.bu.refIQR <- apply(betas.bu.ref, 1, function(x) {quantile(x, c(0.025, 0.5, 0.975))}) %>% t()
+betas.bu.test <- cbind(betas.bu.refIQR, betas.bu.ctrl, betas.bu.pat) %>% as.data.frame()
+for (i in 1:nrow(betas.bu.test)) {
+    if(betas.bu.test[i, "betas.bu.pat"] < betas.bu.test[i, "2.5%"] | 
+       betas.bu.test[i, "betas.bu.pat"] > betas.bu.test[i, "97.5%"]) {
+        betas.bu.test$pat.test[i] <- "s"
+    } else {
+        betas.bu.test$pat.test[i] <- "ns"
+    }
+}
+betas.bu.test$ctrl.test <- NA
+for (i in 1:nrow(betas.bu.test)) {
+    if(betas.bu.test[i, "betas.bu.ctrl"] < betas.bu.test[i, "2.5%"] | 
+       betas.bu.test[i, "betas.bu.ctrl"] > betas.bu.test[i, "97.5%"]) {
+        betas.bu.test$ctrl.test[i] <- "s"
+    } else {
+        betas.bu.test$ctrl.test[i] <- "ns"
+    }
+}
+betas.bu.test$pat.ctrl.test <- apply(betas.bu.test, 1, function(x) {
+    if(x["pat.test"] == "s" & x["ctrl.test"] == "ns") {
+        return("s")
+    } else {
+        return("ns")
+    }
+})
+
+sum(betas.bu.test$ctrl.test == "s")
+# 4 for tissue + disease, 10203 for tissue only 
+sum(betas.bu.test$pat.test == "s")
+# 34086 for tissue + disease, 37039 for tissue only
+sum(betas.bu.test.t$pat.ctrl.test == "s")
+sum(betas.bu.test.td$pat.ctrl.test == "s")
+# 34086 for tissue + disease, 35484 for tissue only
+
+hits.t <- rownames(betas.bu.test.t)[betas.bu.test.t$pat.ctrl.test == "s"]
+hits.td <- rownames(betas.bu.test.td)[betas.bu.test.td$pat.ctrl.test == "s"]
+hits.o <- intersect(hits.t, hits.td)
+
+betas.bu.test.t <- betas.bu.test
+save(betas.bu.test.t, file = "RData/304-NEW_global_IQR_test_bu_tissue.RData")
+
+betas.bu.test.td <- betas.bu.test
+save(betas.bu.test.td, file = "RData/304-NEW_global_IQR_test_bu_tissue_disease.RData")
+
+test <- fData(PedRef.bu.cr) %>% .[hits.o, ] 
+gm.bu.go <- gometh(hits.o, rownames(betas.bu.test.t), "GO", "450K", T)
+gm.bu.topgo <- gm.bu.go[gm.bu.go$Ont == "BP" & gm.bu.go$FDR < 0.05, ]
+```
+
+
+
+
+
+
+
+
+
+
+The following section aims to identify Kabuki-specific marks using the proposed method and compare with hits in the literature
+
+
+### Do the same thing for WB
+```{r}
+# 1-sample t-test on buccal as well
+betas.wb <- betas(PedRef.wb.cr)
+meta.wb <- pData(PedRef.wb.cr)
+betas.wb.pat <- betas(PedRef.wb.cr)[, "KMT2D-20"]
+betas.wb.ctrl <- betas(PedRef.wb.cr)[, "control-22"]
+betas.wb.ref <- betas(PedRef.wb.cr)[, pData(PedRef.wb.cr)$Disease_Status == "Healthy" & pData(PedRef.wb.cr)$Sample_ID != "control-22"]
+#betas.wb.ctref <- cbind(betas.wb.ctrl, betas.wb.ref)
+betas.wb.refIQR <- apply(betas.wb.ref, 1, function(x) {quantile(x, c(0.025, 0.5, 0.975))}) %>% t()
+betas.wb.test <- cbind(betas.wb.refIQR, betas.wb.ctrl, betas.wb.pat) %>% as.data.frame()
+for (i in 1:nrow(betas.wb.test)) {
+    if(betas.wb.test[i, "betas.wb.pat"] < betas.wb.test[i, "2.5%"] | 
+       betas.wb.test[i, "betas.wb.pat"] > betas.wb.test[i, "97.5%"]) {
+        betas.wb.test$pat.test[i] <- "s"
+    } else {
+        betas.wb.test$pat.test[i] <- "ns"
+    }
+}
+betas.wb.test$ctrl.test <- NA
+for (i in 1:nrow(betas.wb.test)) {
+    if(betas.wb.test[i, "betas.wb.ctrl"] < betas.wb.test[i, "2.5%"] |
+       betas.wb.test[i, "betas.wb.ctrl"] > betas.wb.test[i, "97.5%"]) {
+        betas.wb.test$ctrl.test[i] <- "s"
+    } else {
+        betas.wb.test$ctrl.test[i] <- "ns"
+    }
+}
+betas.wb.test$pat.ctrl.test <- apply(betas.wb.test, 1, function(x) {
+    if(x["pat.test"] == "s" & x["ctrl.test"] == "ns") {
+        return("s")
+    } else {
+        return("ns")
+    }
+})
+
+sum(betas.wb.test$ctrl.test == "s")
+# 11167 (t), 19445 (td)
+sum(betas.wb.test$pat.test == "s")
+# 88361 (t), 118712 (td)
+sum(betas.wb.test$pat.ctrl.test == "s")
+# 86586 (t), 114222 (td)
+
+hits.t.kabuki <- rownames(betas.wb.test)[betas.wb.test$pat.ctrl.test == "s"]
+
+betas.bu.test.t <- betas.bu.test
+betas.bu.test.td <- betas.bu.test
+```
+
+
+### Find Kabuki-related DMRs
+```{r}
+load("~/maggie.fu/Reference/EPIC_fdat_Mreg.RData")
+
+fdat <- merge(betas.wb.test, fdat_EPIC_Mreg[, c("CHR", "MAPINFO", "Mreg", "UCSC_REFGENE_NAME", "GENCODECOMPV12_NAME")], by = 0)
+rownames(fdat) <- fdat$Row.names
+
+# Take the biggest DMRs
+betas.wb.test.dmr <- table(fdat[fdat$pat.test == "s", "Mreg"]) %>% sort(decreasing = T) %>% .[.>4] %>% names()
+
+betas.wb.test.dmr.gene <- sapply(betas.wb.test.dmr, function(x) {
+    return(fdat[fdat$Mreg == x, "UCSC_REFGENE_NAME"] %>% 
+               strsplit2(., ";") %>%
+               as.vector() %>%
+               unique())
+}) 
+wb.test.dmr.genes <- do.call(c, betas.wb.test.dmr.gene)
+toString(shQuote(wb.test.dmr.genes))
+title <- c('ZNF331', 'CNIH3', 'DDAH2', 'GRID1', 'GNA12', 'C7orf57')
+wb.test.dmr.genefdat <- fdat[fdat$Mreg %in% betas.wb.test.dmr, ]
+
+mcolor <- c("#fc8d62", "#66c2a5", "black", "light gray", "blue")
+malpha <- c(1, 1, 0.2, 0.2, 1)
+plotmultigeneregion(PedRef.wb.cr, betas.wb.test.dmr, pData(PedRef.wb.cr)$Disease_Status, mcolor, malpha, hide.legend = F, wb.test.dmr.genefdat, "Mreg", title, nCol = 3)
+```
+
+
+### Find overlap in the two Kabuki patients
+```{r}
+betas.wb.pat <- betas(PedRef.wb.cr)[, "KMT2D-6"]
+betas.wb.ctrl <- betas(PedRef.wb.cr)[, "control-101"]
+betas.wb.ref <- betas(PedRef.wb.cr)[, pData(PedRef.wb.cr)$Disease_Status == "Healthy" & pData(PedRef.wb.cr)$Sample_ID != "control-101"]
+#betas.wb.ctref <- cbind(betas.wb.ctrl, betas.wb.ref)
+betas.wb.refIQR <- apply(betas.wb.ref, 1, function(x) {quantile(x, c(0.025, 0.5, 0.975))}) %>% t()
+betas.wb.test <- cbind(betas.wb.refIQR, betas.wb.ctrl, betas.wb.pat) %>% as.data.frame()
+for (i in 1:nrow(betas.wb.test)) {
+    if(betas.wb.test[i, "betas.wb.pat"] < betas.wb.test[i, "2.5%"] | 
+       betas.wb.test[i, "betas.wb.pat"] > betas.wb.test[i, "97.5%"]) {
+        betas.wb.test$pat.test[i] <- "s"
+    } else {
+        betas.wb.test$pat.test[i] <- "ns"
+    }
+}
+betas.wb.test$ctrl.test <- NA
+for (i in 1:nrow(betas.wb.test)) {
+    if(betas.wb.test[i, "betas.wb.ctrl"] < betas.wb.test[i, "2.5%"] |
+       betas.wb.test[i, "betas.wb.ctrl"] > betas.wb.test[i, "97.5%"]) {
+        betas.wb.test$ctrl.test[i] <- "s"
+    } else {
+        betas.wb.test$ctrl.test[i] <- "ns"
+    }
+}
+betas.wb.test$pat.ctrl.test <- apply(betas.wb.test, 1, function(x) {
+    if(x["pat.test"] == "s" & x["ctrl.test"] == "ns") {
+        return("s")
+    } else {
+        return("ns")
+    }
+})
+
+sum(betas.wb.test$ctrl.test == "s")
+# 9575 (t), 12010 (td)
+sum(betas.wb.test$pat.test == "s")
+# 28850 (t), 42925 (td) 
+sum(betas.wb.test$pat.ctrl.test == "s")
+# 28296 (t), 41690 (td)
+
+hits.t.kabuki2 <- rownames(betas.wb.test)[betas.wb.test$pat.ctrl.test == "s"]
+hits.o.kabuki <- intersect(hits.t.kabuki, hits.t.kabuki2)
+
+save(hits.t.kabuki, hits.t.kabuki2, file = "RData/305-Kabuki_wb_tissue.RData")
+#save(betas.bu.test.td, file = "RData/304-NEW_global_IQR_test_bu_tissue_disease.RData")
+
+```
+
+### Compare with previous hits
+
+```{r}
+Khits <- read.csv("Kabuki_hits_Epigenetics_2017.csv", stringsAsFactors = F)
+Khits.O1 <- intersect(hits.t.kabuki, Khits$Probe.ID) #112 (t), 163 (td)
+Khits[Khits$Probe.ID %in% Khits.O1, ] %>% dim()
+fdat <- merge(betas.wb.test[Khits.O1, ], fdat_EPIC_Mreg[, c("CHR", "MAPINFO", "Mreg", "UCSC_REFGENE_NAME", "GENCODECOMPV12_NAME")], by = 0)
+Khits.O2 <- intersect(hits.t.kabuki2, Khits$Probe.ID) #306 (t), 426 (td)
+Khits[Khits$Probe.ID %in% Khits.O2, ]
+fdat <- merge(betas.wb.test[Khits.O2, ], fdat_EPIC_Mreg[, c("CHR", "MAPINFO", "Mreg", "UCSC_REFGENE_NAME", "GENCODECOMPV12_NAME")], by = 0)
+Khits.O <- intersect(hits.o.kabuki, Khits$Probe.ID) #20 (t), 57 (td)
+Khits[Khits$Probe.ID %in% Khits.O, ]
+fdat <- merge(betas.wb.test[Khits.O1, ], fdat_EPIC_Mreg[, c("CHR", "MAPINFO", "Mreg", "UCSC_REFGENE_NAME", "GENCODECOMPV12_NAME")], by = 0)
+```
+
+
+
+```{r}
+fdat <- merge(betas.wb.test[hits.o.kabuki, ], fdat_EPIC_Mreg[, c("CHR", "MAPINFO", "Mreg", "UCSC_REFGENE_NAME", "GENCODECOMPV12_NAME")], by = 0)
+rownames(fdat) <- fdat$Row.names
+
+# Take the biggest DMRs
+betas.wb.test.dmr <- table(fdat[fdat$pat.test == "s", "Mreg"]) %>% sort(decreasing = T) %>% .[.>2] %>% names()
+
+betas.wb.test.dmr.gene <- sapply(betas.wb.test.dmr, function(x) {
+    return(fdat[fdat$Mreg == x, "UCSC_REFGENE_NAME"] %>% 
+               strsplit2(., ";") %>%
+               as.vector() %>%
+               unique())
+}) 
+wb.test.dmr.genes <- do.call(c, betas.wb.test.dmr.gene)
+toString(shQuote(wb.test.dmr.genes))
+title <- c('ZNF331', 'CNIH3', 'DDAH2', 'GRID1', 'GNA12', 'C7orf57')
+wb.test.dmr.genefdat <- fdat[fdat$Mreg %in% betas.wb.test.dmr, ]
+
+mcolor <- c("#fc8d62", "#66c2a5", "black", "light gray", "blue")
+malpha <- c(1, 1, 0.2, 0.2, 1)
+plotmultigeneregion(PedRef.wb.cr, betas.wb.test.dmr, pData(PedRef.wb.cr)$Disease_Status, mcolor, malpha, hide.legend = F, wb.test.dmr.genefdat, "Mreg", title, nCol = 3)
+```
+

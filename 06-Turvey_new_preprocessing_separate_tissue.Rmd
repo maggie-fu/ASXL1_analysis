@@ -1,0 +1,2396 @@
+---
+title: "New preprocessing script"
+author: "Maggie Fu"
+date: "1/10/2020"
+output: html_document
+---
+
+The results of 
+
+```{r}
+# Work directory
+setwd("~/maggie.fu/Projects/Turvey/ASXL1/")
+
+library(GEOquery)
+library(GEOmetadb)
+library(limma)
+library(dplyr)
+library(minfi)
+library(readxl)
+
+# In-house scripts
+source("~/maggie.fu/Functions/PreprocessScripts.R")
+```
+
+## 
+
+```{r}
+getSQLiteFile(destdir = "~/KoborLab/kobor_space/mfu/GEO")
+con <- dbConnect(SQLite(), "~/KoborLab/kobor_space/mfu/GEO/GEOmetadb.sqlite")
+dbListFields(con, "gsm")
+
+x <- dbGetQuery(con, paste0("select ", paste0(dbListFields(con, "gsm"), collapse = ", "), " from gsm where gpl = 'GPL13534' and  organism_ch1 = 'Homo sapiens'"))
+sampl <- x
+x <- dbGetQuery(con, paste0("select ", paste0(dbListFields(con, "gsm"), collapse = ", "), " from gsm where gpl = 'GPL21145' and  organism_ch1 = 'Homo sapiens'"))
+sampl2 <- x
+x <- dbGetQuery(con, paste0("select ", paste0(dbListFields(con, "gsm"), collapse = ", "), " from gsm where gpl = 'GPL16304' and  organism_ch1 = 'Homo sapiens'"))
+sampl3 <- x
+x <- dbGetQuery(con, paste0("select ", paste0(dbListFields(con, "gsm"), collapse = ", "), " from gsm where gpl = 'GPL23976' and  organism_ch1 = 'Homo sapiens'"))
+sampl4 <- x
+
+allsamp <- rbind(sampl, sampl2)
+allsamp <- rbind(sampl3, sampl4)
+
+write.csv(allsamp, file = "GEO_all_cohort.csv")
+
+bldID <- c(grep("[Bb]lood|[Mm]onocy|PB|CD[4815]|B[-][Cc]ell|T[-][Cc]ell|[Gg]ran|[Nn]eu|[Ee]os|[Ll]ympocyte|[Ll]eukocyte|[Pp]eripheral|[Cc]ord|[Bb]uffy|[Hh]aemato|[Ss]erum", allsamp$characteristics_ch1), 
+           grep("[Bb]lood|[Mm]onocy|PB|CD[4815]|B[-][Cc]ell|T[-][Cc]ell|[Gg]ran|[Nn]eu|[Ee]os|[Ll]ympocyte|[Ll]eukocyte|[Pp]eripheral|[Cc]ord|[Bb]uffy|[Ss]erum", allsamp$source_name_ch1),
+           grep("[Bb]lood|[Mm]onocy|PB|CD[4815]|B[-][Cc]ell|T[-][Cc]ell|[Gg]ran|[Nn]eu|[Ee]os|[Ll]ympocyte|[Ll]eukocyte|[Pp]eripheral|[Cc]ord|[Bb]uffy|[Ss]erum", allsamp$title),
+           grep("GSE36369", allsamp$series_id), 
+           grep("GSE98990", allsamp$series_id), 
+           grep("GSE54939", allsamp$series_id))
+bldID <- unique(bldID)
+bldsamp <- allsamp[bldID, ]
+bldGEO <- strsplit(paste0(unique(bldsamp$series_id), collapse = ","), ",")[[1]]
+write.csv(bldsamp, file = "GEO_blood_cohort.csv")
+blood <- bldsamp %>%
+    group_by(series_id) %>% 
+    summarise(N = n()) %>%
+    .[order(.$N, decreasing = T),]
+
+### Just whole blood and PBMC
+# bldID <- c(grep("[Bb]lood|PB|[Pp]eripheral|[Bb]uffy", allsamp$characteristics_ch1), 
+#            grep("[Bb]lood|PB|[Pp]eripheral|[Bb]uffy", allsamp$source_name_ch1),
+#            grep("[Bb]lood|PB|[Pp]eripheral|[Bb]uffy", allsamp$description),
+#            grep("GSE36369", allsamp$series_id))
+# bldID <- unique(bldID)
+# bldsamp <- allsamp[bldID, ]
+anno <- grep("[Aa]ge", bldsamp$characteristics_ch1, value = T)
+annotable <- strsplit2(anno, ";")
+anno.f <- sapply(annotable, function(x) {
+    x[grep("[Aa]ge", x)]
+}) %>% unlist(.)
+bldped <- bldsamp[grep("age: 1[012]|age at sample collection \\(years\\): 1[012]|age \\(y\\): 1[012]|age \\(years\\): 1[012]", bldsamp$characteristics_ch1), ]
+bldped <- bldsamp[grep("age: [234]|age at sample collection \\(years\\): [234]|age \\(y\\): [234]|age \\(years\\): [234]", bldsamp$characteristics_ch1), ]
+save(bldped, file = "RData/00-Biggs_blood_ped_controls.RData")
+```
+
+```{r}
+# Download all blood dataset with more than 1000 samples
+blood <- read.csv("GEO_blood_cohort_samplesize.csv", stringsAsFactors = F)
+bsdir <- "~/KoborLab/kobor_space/mfu/GEO/Blood"
+
+bldGEO <- strsplit(paste0(unique(blood$GEO_ID)[1:100], collapse = ","), ",")[[1]]
+bldGEO <- strsplit(paste0(unique(blood$GEO_ID)[101:130], collapse = ","), ",")[[1]]
+# Matched up some missed cohort in the 06-Turvey_new_preprocessing_list.R file
+missed <- c("GSE43414", "GSE117859", "GSE117860,GSE117861", "GSE131433", "GSE61496", "GSE60132", "GSE61151", "GSE89218", "GSE113967", "GSE137594", "GSE137593,GSE137634", "GSE59999", "GSE62003", "GSE62298,GSE62303", "GSE61653", "GSE62219")
+bldGEO <- strsplit(paste0(c(missed, unique(blood$GEO_ID)[131:150]), collapse = ","), ",")[[1]]
+bldGEO <- bldGEO[!bldGEO %in% c("GSE72338", "GSE70478", "GSE65097")]
+bldGEO <- strsplit(paste0(unique(blood2$series_id), collapse = ","), ",")[[1]]
+bldGEO <- strsplit(paste0(unique(blood$GEO_ID)[151:180], collapse = ","), ",")[[1]]
+BLD <- sapply(bldGEO, function (x) getGEO(x, destdir = bsdir))
+
+# save(BLD, file = "~/maggie.fu/Projects/Turvey/ASXL1/RData/601-blood_GEO.RData")
+# save(BLD2, file = "~/maggie.fu/Projects/Turvey/ASXL1/RData/601-blood_GEO2.RData")
+# save(BLD3, file = "~/maggie.fu/Projects/Turvey/ASXL1/RData/601-blood_GEO3.RData")
+# save(BLD4, file = "~/maggie.fu/Projects/Turvey/ASXL1/RData/601-blood_GEO4.RData")
+load("~/maggie.fu/Projects/Turvey/ASXL1/RData/601-blood_GEO.RData")
+
+
+
+## Get only the pData
+# meta <- sapply(BLD, function(x){
+#     pData(x[1][[1]])
+# })
+
+# GSE55763
+Samp <- BLD$GSE55763$GSE55763_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE55763"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$chip <- pd$title %>% gsub(".*,.", "", .) %>% gsub("_.*", "", .)
+pd$position <- pd$title %>% gsub(".*,.", "", .) %>% gsub(".*_", "", .)
+GSE55763.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "gender:ch1", "age", "chip", "position")]
+colnames(GSE55763.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Sentrix_ID", "Sentrix_Position")
+#getGEOSuppFiles("GSE55763", baseDir = bsdir)
+#gunzip(paste0(bsdir, "GSE55763/GSE55763_normalized_betas.txt.gz"))
+GSE55763 <- read.delim("~/KoborLab/kobor_space/mfu/GEO/Blood/Reference/GSE55763/GSE55763_unmethylated_methylated_signal_intensities.txt")
+dim(GSE55763)
+
+# GSE105018
+Samp <- BLD$GSE105018$GSE105018_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE105018"
+pd$tissue <- "WB"
+GSE105018.m <- pd[, c("cohort", "geo_accession", "source_name_ch1", "data_processing", "platform_id", "tissue", "gender:ch1", "familyid:ch1", "twinid:ch1", "zygosity:ch1")]
+colnames(GSE105018.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Family_ID", "Twin_ID", "Twin")
+#getGEOSuppFiles("GSE105018", baseDir = bsdir)
+#untar("~/KoborLab/kobor_space/mfu/GEO/Blood/Reference/GSE105018/GSE105018_RAW.tar")
+#bsn <- list.files("~/KoborLab/kobor_space/mfu/GEO/Blood/Reference/GSE105018/") %>% grep("idat", ., value = T) %>% gsub("_Grn.*|_Red.*", "", .)
+#GSE105018.RG <- read.metharray(unique(file.path(bsdir, "Reference/GSE105018", bsn)), extended = T, force = T)
+#save(GSE105018.RG, file = "~/KoborLab/kobor_space/mfu/GEO/Blood/Reference/GSE105018/GSE105018_RGset.RData")
+
+# GSE56046
+Samp <- BLD$GSE56046$GSE56046_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE56046"
+pd$tissue <- "CD14"
+pd$age <- as.numeric(pd$`age:ch1`)
+GSE56046.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "age", "bcell:ch1", "neutro:ch1", "nkcell:ch1", "tcell:ch1", "cac:ch1", "ChIP:ch1", "plaque:ch1", "racegendersite:ch1", "well:ch1")]
+colnames(GSE56046.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Age", "Bcell", "Neu", "NK", "Tcell", "CAC", "ChIP", "Plaque", "Race_Gender", "Well")
+# Transcriptomic data as measured by Illumina HumanHT-12 V4.0 expression beadchip is available at GSE56047
+#getGEOSuppFiles("GSE56046", baseDir = bsdir)
+#gunzip("~/KoborLab/kobor_space/mfu/GEO/Blood/Reference/GSE56046/GSE56046_methylome_signal_intensities.txt.gz", destname = "~/KoborLab/kobor_space/mfu/GEO/Blood/Reference/GSE56046/GSE56046_methylome_signal_intensities.txt")
+GSE56046 <- read.delim("~/KoborLab/kobor_space/mfu/GEO/Blood/Reference/GSE56046/GSE56046_methylome_signal_intensities.txt")
+save(GSE56046, file = "~/KoborLab/kobor_space/mfu/GEO/Blood/Reference/GSE56046/GSE56046_signal_intensities.RData")
+
+
+# GSE82273
+Samp <- BLD$GSE82273$GSE82273_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE82273"
+pd$tissue <- "WB"
+pd$age <- 3/365
+pd$sex <- pd$`gender:ch1` %>% gsub("female", "F", .) %>% gsub("male", "M", .)
+pd$mom <- as.numeric(gsub("yr", "", pd$`maternalage:ch1`))
+GSE82273.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "mom")]
+colnames(GSE82273.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Maternal_Age")
+#getGEOSuppFiles("GSE82273", baseDir = paste0(bsdir, "/Reference"))
+GSE82273 <- read.delim("~/KoborLab/kobor_space/mfu/GEO/Blood/Reference/GSE82273/GSE82273_Matrix_methylated_unmethylated_signals.txt.gz")
+
+# GSE84727
+Samp <- BLD$GSE84727$GSE84727_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE84727"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+GSE84727.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "Sex:ch1", "age", "disease_status:ch1")]
+colnames(GSE84727.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Disease_Status")
+#getGEOSuppFiles("GSE84727", baseDir = paste0(bsdir, "/Reference"))
+
+
+# GSE132203
+Samp <- BLD$GSE132203$GSE132203_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE132203"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .) %>% gsub("Male", "M", .)
+GSE132203.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "", "age", "bcell:ch1", "mono:ch1", "nk:ch1", "cd8t:ch1", "cd4t:ch1", "pc1:ch1", "pc2:ch1", "pc3:ch1", "race:ch1", "childabphyssexemot_ctq_01modandsev:ch1", "tei_total_types_experienced_somewitness:ch1", "mergedcapsandpsswinthin30days:ch1")]
+colnames(GSE132203.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Bcell", "Mono", "NK", "CD8T", "CD4T", "PC1", "PC2", "PC3", "Ancestry", "Child_Abuse", "Trauma_Type", "Caps_Pss")
+getGEOSuppFiles("GSE132203", baseDir = paste0(bsdir, "/Reference"))
+
+
+# GSE87571
+Samp <- BLD$GSE87571$GSE87571_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE87571"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .) %>% gsub("Male", "M", .)
+GSE87571.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "disease state:ch1")]
+colnames(GSE87571.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Disease_Status")
+getGEOSuppFiles("GSE87571", baseDir = paste0(bsdir, "/Reference"))
+
+# GSE125105
+Samp <- BLD$GSE125105$GSE125105_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE125105"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$disease <- pd$`diagnosis:ch1` %>% gsub("case", "depression", .)
+GSE125105.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "Sex:ch1", "age", "disease", "relation", "cellcount-bcell:ch1", "cellcount-cd4t:ch1", "cellcount-cd8t:ch1", "cellcount-gran:ch1", "cellcount-mono:ch1", "cellcount-nk:ch1")]
+colnames(GSE125105.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Disease_Status", "Replicates", "Bcell", "CD4T", "CD8T", "Gran", "Mono", "NK")
+getGEOSuppFiles("GSE125105", baseDir = paste0(bsdir, "/Reference"))
+
+# GSE42861
+Samp <- BLD$GSE42861$GSE42861_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE42861"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("m", "M", .)  %>% gsub("f", "F", .)
+GSE42861.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "disease state:ch1", "smoking status:ch1")]
+colnames(GSE42861.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Disease_Status", "Smoking_Status")
+getGEOSuppFiles("GSE42861", baseDir = paste0(bsdir, "/Reference"))
+
+# GSE116339
+Samp <- BLD$GSE116339$GSE116339_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE116339"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$chip <- pd$title %>% gsub(".*,.", "", .) %>% gsub("_.*", "", .)
+pd$position <- pd$title %>% gsub(".*,.", "", .) %>% gsub(".*_", "", .)
+GSE116339.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "pbb-101:ch1", "pbb-153:ch1", "pbb-180:ch1", "pbb-77:ch1", "ln(totalpbb):ch1", "chip", "position")]
+colnames(GSE116339.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "PBB-101", "PBB-153", "PBB-180", "PBB-77", "PBB_Total", "Sentrix_ID", "Sentrix_Position")
+getGEOSuppFiles("GSE116339", baseDir = paste0(bsdir, "/Reference"))
+
+
+# GSE80417
+Samp <- BLD$GSE80417$GSE80417_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE80417"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+GSE80417.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "Sex:ch1", "age", "disease status:ch1")]
+colnames(GSE80417.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Disease_Status")
+getGEOSuppFiles("GSE80417", baseDir = paste0(bsdir, "/Reference"))
+
+
+# GSE40279
+Samp <- BLD$GSE40279$GSE40279_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE40279"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age (y):ch1`)
+GSE40279.m <- pd[, c("cohort", "geo_accession", "source_name_ch1", "data_processing", "platform_id", "tissue", "gender:ch1", "age", "ethnicity:ch1", "plate:ch1", "source:ch1")]
+colnames(GSE40279.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Ancestry", "Plate", "Data_Source")
+getGEOSuppFiles("GSE40279", baseDir = paste0(bsdir, "/Reference"))
+
+
+# GSE89353
+Samp <- BLD$GSE89353$GSE89353_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE89353"
+pd$tissue <- "WB"
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+GSE89353.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex")]
+colnames(GSE89353.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex")
+getGEOSuppFiles("GSE89353", baseDir = paste0(bsdir, "/Reference"))
+
+
+# GSE56105
+Samp <- BLD$GSE56105$GSE56105_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE56105"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+GSE56105.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "gender:ch1", "age", "twin:ch1")]
+colnames(GSE56105.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Twin")
+#getGEOSuppFiles("GSE56105", baseDir = paste0(bsdir, "/Reference"))
+#gunzip("~/KoborLab/kobor_space/mfu/GEO/Blood/Reference/GSE56105/GSE56105_raw_data_signal_intensities.txt.gz", "~/KoborLab/kobor_space/mfu/GEO/Blood/Reference/GSE56105/GSE56105_raw_data_signal_intensities.txt")
+GSE56105 <- read.delim("~/KoborLab/kobor_space/mfu/GEO/Blood/Reference/GSE56105/GSE56105_raw_data_signal_intensities.txt")
+test <- readGEORawFile("~/KoborLab/kobor_space/mfu/GEO/Blood/Reference/GSE56105/GSE56105_raw_data_signal_intensities.txt", "\t", ".Unmethylated.Signal", ".Methylated.Signal")
+detectionP(test) <- GSE56105[, grep(".Detection", colnames(GSE56105))]
+
+# GSE69138
+Samp <- BLD$GSE69138$GSE69138_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE69138"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$id <- gsub(".* ", "", pd$title)
+pd$chip <- pd$id %>% gsub("_.*", "", .)
+pd$position <- pd$id %>% gsub(".*_", "", .)
+GSE69138.m <- pd[, c("cohort", "geo_accession", "id", "data_processing", "platform_id", "tissue", "sex", "age", "disease state:ch1", "stroke subtype:ch1", "chip", "position")]
+colnames(GSE69138.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Disease_Status", "Stroke_Subtype", "Sentrix_ID", "Sentrix_Position")
+getGEOSuppFiles("GSE69138", baseDir = paste0(bsdir, "/Reference"))
+
+
+# GSE103657
+Samp <- BLD$GSE103657$GSE103657_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE103657"
+pd$tissue <- "DBS"
+pd$age <- pd$`age:ch1` %>% gsub("Neonatal", 3/365, .) %>% gsub("5 years", 5, .) %>% as.numeric()
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$chip <- pd$description %>% gsub("_.*", "", .)
+pd$position <- pd$description %>% gsub(".*_", "", .)
+GSE103657.m <- pd[, c("cohort", "geo_accession", "description", "data_processing", "platform_id", "tissue", "sex", "age", "description.1", "chip", "position")]
+colnames(GSE103657.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Replicates", "Sentrix_ID", "Sentrix_Position")
+getGEOSuppFiles("GSE103657", baseDir = paste0(bsdir, "/Reference"))
+
+
+# GSE111629
+Samp <- BLD$GSE111629$GSE111629_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE111629"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$chip <- pd$source_name_ch1 %>% gsub("X", "", .) %>% gsub("_.*", "", .)
+pd$position <- pd$source_name_ch1 %>% gsub(".*_", "", .)
+GSE111629.m <- pd[, c("cohort", "geo_accession", "source_name_ch1", "data_processing", "platform_id", "tissue", "sex", "age", "disease state:ch1", "ethnicity:ch1", "chip", "position")]
+colnames(GSE111629.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Disease_Status", "Ancestry", "Sentrix_ID", "Sentrix_Position")
+getGEOSuppFiles("GSE111629", baseDir = paste0(bsdir, "/Reference"))
+
+
+# GSE128235 (subset of GSE125105)
+Samp <- BLD$GSE128235$GSE128235_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE128235"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$disease <- pd$`diagnosis:ch1` %>% gsub("case", "depression", .)
+GSE128235.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "Sex:ch1", "age", "disease", "education level:ch1", "history of myocardial infarction:ch1", "snp based principle component 1:ch1", "snp based principle component 2:ch1", "cellcount-bcell:ch1", "cellcount-cd4t:ch1", "cellcount-cd8t:ch1", "cellcount-gran:ch1", "cellcount-mono:ch1", "cellcount-nk:ch1", "relation")]
+colnames(GSE128235.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Disease_Status", "Education", "Myocardial_Infarction_History", "Genetic_PC1", "Genetic_PC2", "Bcell", "CD4T", "CD8T", "Gran", "Mono", "NK", "Replicates")
+getGEOSuppFiles("GSE128235", baseDir = paste0(bsdir, "/Reference"))
+
+
+# GSE51032
+Samp <- BLD$GSE51032$GSE51032_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE51032"
+pd$tissue <- "Buffy"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$age_m <- as.numeric(pd$`age at menarche:ch1`)
+pd$chip <- pd$title %>% gsub("_.*", "", .)
+pd$position <- pd$title %>% gsub(".*_", "", .)
+GSE51032.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "gender:ch1", "age", "cancer type (icd-10):ch1", "time to diagnosis:ch1", "chip", "position")]
+colnames(GSE51032.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Cancer_Subtype", "Time_to_Diagnosis", "Sentrix_ID", "Sentrix_Position")
+getGEOSuppFiles("GSE51032", baseDir = paste0(bsdir, "/Reference"))
+
+
+# GSE72774
+Samp <- BLD$GSE72774$GSE72774_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE72774"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`Sex:ch1` %>% gsub("female", "F", .)  %>% gsub("male", "M", .)
+pd$id <- gsub(".* ", "", pd$title)
+GSE72774.m <- pd[, c("cohort", "geo_accession", "id", "data_processing", "platform_id", "tissue", "sex", "age", "diseasestatus:ch1", "familyhistoryofparkinsons:ch1", "levodopastatus:ch1", "levodopaperdayincludingagonists:ch1", "numberofyearsinschool:ch1", "smokingstatus:ch1", "packyearstotal:ch1", "bcell:ch1", "cd4t:ch1", "cd8t:ch1", "mono:ch1", "nk:ch1", "gran:ch1", "dnamage:ch1")]
+colnames(GSE72774.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Disease_Status", "Family_History_Parkinsons", "Levodopa_Status", "Levodopa_Dosage", "Years_in_School", "Smoking_Status", "Smoking_Packs_Year", "Bcell", "CD4T", "CD8T", "Mono", "NK", "Gran", "DNAmAge")
+getGEOSuppFiles("GSE72774", baseDir = paste0(bsdir, "/Reference"))
+
+
+# GSE121633
+Samp <- BLD$GSE121633$GSE121633_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE121633"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$id <- gsub(" .*", "", pd$title)
+GSE121633.m <- pd[, c("cohort", "geo_accession", "id", "data_processing", "platform_id", "tissue", "Sex:ch1", "age", "ChIP:ch1", "position:ch1")]
+colnames(GSE121633.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Sentrix_ID", "Sentrix_Position")
+getGEOSuppFiles("GSE121633", baseDir = paste0(bsdir, "/Reference"))
+
+
+# GSE100227
+Samp <- BLD$GSE100227$GSE100227_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE100227"
+pd$tissue <- "WB"
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+GSE100227.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "zygosity:ch1", "family id:ch1")]
+colnames(GSE100227.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Twin", "Family_ID")
+getGEOSuppFiles("GSE100227", baseDir = paste0(bsdir, "/Reference"))
+
+# GSE50660
+Samp <- BLD$GSE50660$GSE50660_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE50660"
+pd$tissue <- "WB"
+pd$id <- gsub(".* ", "", pd$title)
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$smoking <- pd$`smoking (0, 1 and 2, which represent never, former and current smokers):ch1` %>% gsub(0, "never", .) %>% gsub(1, "former", .) %>% gsub(2, "current", .)
+GSE50660.m <- pd[, c("cohort", "geo_accession", "id", "data_processing", "platform_id", "tissue", "sex", "age", "smoking")]
+colnames(GSE50660.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Smoking_Status")
+getGEOSuppFiles("GSE50660", baseDir = paste0(bsdir, "/Reference"))
+
+# GSE59250
+Samp <- BLD$GSE59250$GSE59250_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE59250"
+GSE59250.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "cell type:ch1", "disease state:ch1", "sentrix.barcode:ch1", "sentrix.position:ch1")]
+colnames(GSE59250.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Disease_Status", "Sentrix_ID", "Sentrix_Position")
+getGEOSuppFiles("GSE59250", baseDir = paste0(bsdir, "/Reference"))
+
+# GSE72680
+Samp <- BLD$GSE72680$GSE72680_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE72680"
+pd$tissue <- "WB"
+pd$id <- gsub(".* ", "", pd$title)
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`Sex:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+GSE72680.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "race/ethnicity:ch1", "body mass index:ch1", "childhood sexual/physical abuse moderate to extreme:ch1", "childhood trauma questionnaire total score:ch1", "cumulative life stress:ch1", "current stress:ch1", "kreek-mchugh-schluger-kellogg scale score for current alcohol use:ch1", "kreek-mchugh-schluger-kellogg scale score for current cocaine use:ch1", "kreek-mchugh-schluger-kellogg scale score for current heroin use:ch1", "kreek-mchugh-schluger-kellogg scale score for current marijuana use:ch1", "kreek-mchugh-schluger-kellogg scale score for current tobacco use:ch1", "network life stress:ch1", "personal life stress:ch1", "posttraumatic stress disorder symptom scale total score:ch1", "treatment for anxiety disorder:ch1", "treatment for bipolar disorder:ch1", "treatment for depression:ch1", "treatment for posttraumatic stress disorder:ch1", "dna methylation-predicted age:ch1", "b cells:ch1", "cd4 t cells:ch1", "cd8 t cells:ch1", "monocytes:ch1", "natural killer cells:ch1", "granulocytes:ch1")]
+colnames(GSE72680.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Ancestry", "BMI", "Childhood_Abuse", "Childhood_Trauma", "Cumulative_Life_Stress", "Current_Stress", "Alcohol_Use", "Cocaine_Use", "Heroin_Use", "Marijuana_Use", "Tobacco_Use", "Network_Life_Stress", "Personal_Life_Stress", "PTSD_Score", "Anxiety_Disorder_Treatment", "Bipolar_Disorder_Treatment", "Depression_Treatment", "PTSD_Treatment", "DNAmAge", "Bcell", "CD4T", "CD8T", "Mono", "NK", "Gran")
+getGEOSuppFiles("GSE72680", baseDir = paste0(bsdir, "/Reference"))
+
+# GSE107080
+Samp <- BLD$GSE107080$GSE107080_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE107080"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`Sex:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$chip <- pd$source_name_ch1 %>% gsub("_.*", "", .)
+pd$position <- pd$source_name_ch1 %>% gsub(".*_", "", .)
+pd$disease <- "HIV"
+GSE107080.m <- pd[, c("cohort", "geo_accession", "source_name_ch1", "data_processing", "platform_id", "tissue", "sex", "age", "race:ch1", "smoking:ch1", "hcv_dx:ch1", "disease", "idu:ch1", "log10vl:ch1", "artadherence:ch1", "wbc_new:ch1", "bcell_850k:ch1", "cd4t_850k:ch1", "cd8t_850k:ch1", "mono_850k:ch1", "nk_850k:ch1", "gran_850k:ch1", "chip", "position")]
+colnames(GSE107080.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Ancestry", "Smoking_Status", "Hepititis_C_Virus", "Disease_Status", "Illicit_Drug_Use_Status", "Log10v1", "ART_Medication", "WBC", "Bcell", "CD4T", "CD8T", "Mono", "NK", "Gran", "Sentrix_ID", "Sentrix_Position")
+
+# GSE112611
+Samp <- BLD$GSE112611$GSE112611_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE112611"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+GSE112611.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "diagnosis:ch1", "baseline vs follow-up:ch1", "disease stage at diagnosis:ch1", "disease stage at at follow up:ch1")]
+colnames(GSE112611.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Disease_Status", "Baseline_or_Followup", "Disease_Stage_Diagnosis", "Disease_Stage_Followup")
+
+# GSE53740
+Samp <- BLD$GSE53740$GSE53740_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE53740"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("FEMALE", "F", .)  %>% gsub("MALE", "M", .) %>% gsub("UNKNOWN", NA, .)
+pd$chip <- pd$title %>% gsub("_.*", "", .)
+pd$position <- pd$title %>% gsub(".*_", "", .)
+GSE53740.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "race:ch1", "diagnosis:ch1", "tau_a1:ch1", "tau_a2:ch1", "batch:ch1", "chip", "position")]
+colnames(GSE53740.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Ancestry", "Disease_Status", "Tau_a1", "Tau_a2", "Batch", "Sentrix_ID", "Sentrix_Position")
+
+# GSE87648
+Samp <- BLD$GSE87648$GSE87648_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE87648"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$chip <- pd$title %>% gsub("_.*", "", .)
+pd$position <- pd$title %>% gsub(".*_", "", .)
+GSE87648.m <- pd[, c("cohort", "geo_accession", "patient_number:ch1", "data_processing", "platform_id", "tissue", "Sex:ch1", "age",  "simplified_diagnosis:ch1", "smoking status:ch1")]
+colnames(GSE87648.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Simplified_Diagnosis", "Smoking_Status")
+# Transcriptomic data as measured by Illumina HumanHT-12 V4.0 expression beadchip is available at GSE86434
+# Purified cell DNAm available at GSE87640
+
+# GSE97628
+Samp <- BLD$GSE97628$GSE97628_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE97628"
+pd$tissue <- "CB"
+GSE97628.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue")]
+colnames(GSE97628.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue")
+
+# GSE89278
+Samp <- BLD$GSE89278$GSE89278_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE89278"
+pd$tissue <- "DBS"
+pd$age <- 0
+pd$id <- pd$title %>% gsub(".* ", "", .)
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$chip <- gsub("_.*", "", pd$id)
+pd$position <- gsub(".*_", "", pd$id)
+pd$treatment <- pd$title %>% gsub(".*es_", "", .) %>% gsub(" .*", "", .)
+GSE89278.m <- pd[, c("cohort", "geo_accession", "id", "data_processing", "platform_id", "tissue", "sex", "age", "treatment", "chip", "position")]
+colnames(GSE89278.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Intervention", "Sentrix_ID", "Sentrix_Position")
+
+bsn <- list.files("GSE89278/") %>% grep("idat", ., value = T) %>% gsub("_Grn.*|_Red.*", "", .)
+RGset <- sapply(unique(file.path("GSE89278", bsn)), function(x) {
+    read.metharray(x, extended = T)
+    message(paste0(x, "/n"))
+})
+test <- RGset[[1]]
+for (i in 2:length(RGset)) {
+    if (dim(test)[1] != dim(RGset[[i]])[1]) {
+        chip <- gsub("GSM.{7}_", "", colnames(RGset[[i]])[1]) %>% gsub("_.*", "", .)
+        cat(paste0("array ", chip, " has a different dimension with ", dim(RGset[[i]])[1], " rows.\n It will not be included in the final RGset.\n "))
+    }
+}
+
+# GSE80283
+Samp <- BLD$GSE80283$GSE80283_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE80283"
+pd$tissue <- "DBS"
+pd$ga <- as.numeric(pd$`ga weeks:ch1`)
+pd$age <- 0
+pd$sex <- pd$`Sex:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$chip <- gsub("_.*", "", pd$title)
+pd$position <- gsub(".*_", "", pd$title)
+GSE80283.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "ga", "race:ch1", "chip", "position")]
+colnames(GSE80283.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Gestational_Age", "Ancestry", "Sentrix_ID", "Sentrix_Position")
+
+# GSE73103
+Samp <- BLD$GSE73103$GSE73103_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE73103"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`Sex:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+GSE73103.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "weight category:ch1", "rs1011731:ch1", "rs10150332:ch1", "rs10195252:ch1", "rs10458787:ch1", "rs1055144:ch1", "rs10767664:ch1", "rs10769908:ch1", "rs10783050:ch1", "rs10838738:ch1", "rs10993160:ch1", "rs11142387:ch1")]
+colnames(GSE73103.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Weight_Category", "rs1011731", "rs10150332", "rs10195252", "rs10458787", "rs1055144", "rs10767664", "rs10769908", "rs10783050", "rs10838738", "rs10993160", "rs11142387")
+
+# GSE72773
+Samp <- BLD$GSE72773$GSE72773_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE72773"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`Sex:ch1` %>% gsub("female", "F", .)  %>% gsub("male", "M", .)
+pd$id <- gsub(".* ", "", pd$title)
+GSE72773.m <- pd[, c("cohort", "geo_accession", "id", "data_processing", "platform_id", "tissue", "sex", "age", "ethnicity:ch1", "dnamage:ch1", "b cell:ch1", "cd4t:ch1", "cd8t:ch1", "monocyte:ch1", "natural killer cell:ch1", "granulocyte:ch1")]
+colnames(GSE72773.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Ancestry", "DNAmAge", "Bcell", "CD4T", "CD8T", "Mono", "NK", "Gran")
+
+# GSE36369
+Samp <- BLD$GSE36369$GSE36369_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE36369"
+pd$tissue <- "LCL"
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$ethnicity <- pd$title %>% gsub(" \\[.*", "", .)
+GSE36369.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "ethnicity", "cell line:ch1", "health state:ch1")]
+colnames(GSE36369.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Ancestry", "Cell_Line", "Disease_Status")
+
+# GSE54882
+Samp <- BLD$GSE54882$GSE54882_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE54882"
+pd$tissue <- "WB"
+pd$sex <- pd$`gender:ch1` %>% gsub("female", "F", .)  %>% gsub("male", "M", .)
+pd$id <- gsub(".*from ", "", pd$title)
+GSE54882.m <- pd[, c("cohort", "geo_accession", "id", "data_processing", "platform_id", "tissue", "sex", "race:ch1", "disease state:ch1")]
+colnames(GSE54882.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Ancestry", "Disease_Status")
+
+# GSE59065
+Samp <- BLD$GSE59065$GSE59065_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE59065"
+pd$age <- as.numeric(pd$`age (yr):ch1`)
+pd$tissue <- gsub("Peripheral blood", "WB", pd$`cell/tissue type:ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("female", "F", .)  %>% gsub("male", "M", .)
+GSE59065.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "slide_id:ch1", "array_id:ch1")]
+colnames(GSE59065.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Sentrix_ID", "Sentrix_Position")
+
+# GSE67705
+Samp <- BLD$GSE67705$GSE67705_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE67705"
+pd$tissue <- gsub(".*,.", "", pd$title) %>% gsub("whole blood", "WB", .) %>% gsub("CD4.*", "CD4T", .) %>% gsub("neutrophils", "Neu",.)
+pd$age <- c(as.numeric(pd$`age:ch1`)[1:188], as.numeric(pd$`age (yrs):ch1`)[189:284])
+pd$sex <- pd$`gender:ch1` %>% gsub("female", "F", .)  %>% gsub("male", "M", .)
+pd$id <- gsub(".*from ", "", pd$title)
+pd$disease <- pd$title %>% gsub(",.*", "", .) %>% gsub(".*from ", "", .) %>% gsub()
+pd$disease <- c(pd$disease[1:188], pd$`subject status/id:ch1`[189:284])
+pd$ancestry <- "white"
+GSE67705.m <- pd[, c("cohort", "geo_accession", "id", "data_processing", "platform_id", "tissue", "sex", "age", "ethnicity:ch1", "disease")]
+colnames(GSE67705.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Ancestry", "Disease_Status")
+
+# GSE106648
+Samp <- BLD$GSE106648$GSE106648_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE106648"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("female", "F", .)  %>% gsub("male", "M", .)
+pd$chip <- gsub("_.*", "", pd$title)
+pd$position <- gsub(".*_", "", pd$title)
+GSE106648.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "disease status:ch1", "smoking status:ch1", "chip", "position")]
+colnames(GSE106648.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Disease_Status", "Smoking_Status", "Sentrix_ID", "Sentrix_Position")
+
+# GSE99863
+Samp <- BLD$GSE99863$GSE99863_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE99863"
+pd$tissue <- "WB"
+pd$chip <- gsub("_.*", "", pd$title)
+pd$position <- gsub(".*_", "", pd$title)
+GSE99863.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "Sex:ch1", "season:ch1", "chip", "position")]
+colnames(GSE99863.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Season", "Sentrix_ID", "Sentrix_Position")
+
+# GSE85210
+Samp <- BLD$GSE85210$GSE85210_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE85210"
+pd$tissue <- "WB"
+pd$id <- gsub(".* ", "", pd$title)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE85210.m <- pd[, c("cohort", "geo_accession", "id", "data_processing", "platform_id", "tissue", "subject status:ch1", "chip", "position")]
+colnames(GSE85210.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Smoking_Status", "Sentrix_ID", "Sentrix_Position")
+
+# GSE87640
+Samp <- BLD$GSE87640$GSE87640_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE87640"
+pd$tissue <- gsub("mono.*", "Mono", pd$`cell type:ch1`) %>% gsub("wh.*", "WB", .)
+pd$age <- as.numeric(pd$`age at sample:ch1`)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE87640.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "Sex:ch1", "age", "full_diagnosis:ch1", "simplified_diagnosis:ch1", "patient_number:ch1", "chip", "position")]
+colnames(GSE87640.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Full_Diagnosis", "Simplified_Diagnosis", "Individual", "Sentrix_ID", "Sentrix_Position")
+
+# GSE53816
+Samp <- BLD$GSE53816$GSE53816_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE53816"
+pd$tissue <- "CB"
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+GSE53816.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "ethnicity:ch1", "batch:ch1")]
+colnames(GSE53816.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Ancestry", "Batch")
+
+# GSE97362
+Samp <- BLD$GSE97362$GSE97362_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE97362"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age (years):ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("female", "F", .)  %>% gsub("mle", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE97362.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "disease state:ch1", "sample type:ch1", "chip", "position")]
+colnames(GSE97362.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Disease_Status", "Variants", "Sentrix_ID", "Sentrix_Position")
+
+# GSE56600
+Samp <- BLD$GSE56600$GSE56600_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE56600"
+pd$tissue <- "BM"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$disease <- "B-ALL"
+GSE56600.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "gender:ch1", "age", "disease", "cytogenetics:ch1")]
+colnames(GSE56600.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Disease_Status", "Variants")
+# Transcriptomic data as measured by Affymetrix Human Gene 1.0 ST Array is available at GSE56599
+# WGBS data available at GSE56601
+
+# GSE68379
+Samp <- BLD$GSE68379$GSE68379_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE68379"
+pd$tissue <- "CL"
+pd$disease <- "B-ALL"
+GSE68379.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "cell line:ch1", "cosmic_id:ch1", "primary histology:ch1", "primary site:ch1")]
+colnames(GSE68379.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Cell_Line", "Cosmic_ID", "Primary_Histology", "Primary_Site")
+
+# GSE56581
+Samp <- BLD$GSE56581$GSE56581_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE56581"
+pd$tissue <- "CD4T"
+pd$age <- as.numeric(pd$`age (yrs):ch1`)
+GSE56581.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "age", "mono:ch1", "neutro:ch1", "nkcell:ch1", "racegendersite:ch1", "chip id:ch1", "well id:ch1")]
+colnames(GSE56581.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Age", "Mono", "Neu", "NK", "Race_Gender", "Sentrix_ID", "Sentrix_Position")
+# Transcriptomic data available at GSE56580
+
+# GSE104942
+Samp <- BLD$GSE104942$GSE104942_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE104942"
+pd$tissue <- "WB"
+pd$sex <- "F"
+pd$disease <- gsub("unaffected", "Healthy", pd$`status:ch1`) %>% gsub("affected", "breast cancer",.)
+GSE104942.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "disease")]
+colnames(GSE104942.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Disease_Status")
+
+# GSE113725
+Samp <- BLD$GSE113725$GSE113725_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE113725"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$chip <- gsub("_.*", "", pd$title)
+pd$position <- gsub(".*_", "", pd$title)
+GSE113725.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "gender:ch1", "age", "groupid:ch1", "chip", "position")]
+colnames(GSE113725.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Depression_Group", "Sentrix_ID", "Sentrix_Position")
+
+# GSE40576
+Samp <- BLD$GSE40576$GSE40576_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE40576"
+pd$tissue <- "PBMC"
+pd$disease <- gsub("TRUE", "asthma", pd$`asthma:ch1`) %>% gsub("FALSE", "Healthy", .)
+GSE40576.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "disease", "subtype:ch1")]
+colnames(GSE40576.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Disease_Status", "Asthma_Subtype")
+# Transcriptomic data on NimbleGen Homo sapiens Expression Array is available at GSE40732
+
+# GSE49031
+Samp <- BLD$GSE49031$GSE49031_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE49031"
+pd$tissue <- "BM"
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE49031.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "cell type:ch1", "disease state:ch1", "immunophenotype:ch1", "subtype:ch1", "chip", "position")]
+colnames(GSE49031.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Cell_Type", "Disease_Status", "ALL_Immunophenotype", "ALL_Subtype", "Sentrix_ID", "Sentrix_Position")
+# Transcriptomic data of Affymetrix Human Genome U133 Plus 2.0 Array is available at GSE49032
+
+# GSE69270
+Samp <- BLD$GSE69270$GSE69270_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE69270"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age in 2011:ch1`)
+pd$sex <- pd$`gender (1=woman; 0=man):ch1` %>% gsub("1", "F", .)  %>% gsub("0", "M", .)
+GSE69270.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "bcell cell proportion:ch1", "cd4t cell proportion:ch1", "cd8t cell proportion:ch1", "granulocyte proportion:ch1", "monocyte proportion:ch1")]
+colnames(GSE69270.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Bcell", "CD4T", "CD8T", "Gran", "Mono")
+
+# GSE73115  
+Samp <- BLD$GSE73115$GSE73115_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE73115"
+pd$tissue <- "WB"
+pd$sex <- pd$`Sex:ch1` %>% gsub("female", "F", .)  %>% gsub("male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE73115.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "individual id:ch1", "chip", "position")]
+colnames(GSE73115.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Individual", "Sentrix_ID", "Sentrix_Position")
+
+# GSE74548
+Samp <- BLD$GSE74548$GSE74548_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE74548"
+pd$tissue <- "Buffy"
+pd$age <- as.numeric(pd$`age at baseline:ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("female", "F", .)  %>% gsub("male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE74548.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "mthfr c677t genotype:ch1", "intervention:ch1", "time point:ch1", "plasma homocysteine levels (µm/l):ch1", "serum folate levels (nm/l):ch1", "serum vitamin b12 levels (pm/l):ch1", "subject:ch1", "bisulfite plate:ch1", "chip", "position")]
+colnames(GSE74548.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "MTHFR_Genotype", "Intervention", "Intervention_Timepoint", "Plasma_Homocysteine(µm/l)", "Serum_Folate(nm/l)", "Serum_B12(pm/l)", "Individual", "Plate", "Sentrix_ID", "Sentrix_Position")
+
+# GSE102468
+Samp <- BLD$GSE102468$GSE102468_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE102468"
+pd$tissue <- "WB"
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE102468.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "diagnosis:ch1", "chip", "position")]
+colnames(GSE102468.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Disease_Status", "Sentrix_ID", "Sentrix_Position")
+
+# GSE74414
+Samp <- BLD$GSE74414$GSE74414_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE74414"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("female", "F", .)  %>% gsub("male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE74414.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "disease state:ch1", "subject:ch1", "treatment:ch1", "b cells:ch1", "cd4 t cells:ch1", "cd8 t cells:ch1", "monocytes:ch1", "natural killer cells:ch1", "granulocytes:ch1", "dna methylation-predicted age:ch1")]
+colnames(GSE74414.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Disease_Status", "Individual", "Treatment", "Bcell", "CD4T", "CD8T", "Mono", "NK", "Gran", "DNAmAge")
+
+# GSE116380
+Samp <- BLD$GSE116380$GSE116380_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE116380"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$disease <- gsub("TRUE", "Schizophrenia", pd$`schizophrenia:ch1`) %>% gsub("FALSE", "Control", .)
+GSE116380.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "gender:ch1", "age", "disease", "famine:ch1", "city:ch1", "sentrix:ch1", "position:ch1", "bcell:ch1", "cd4t:ch1", "cd8t:ch1", "mono:ch1", "nk:ch1", "barfieldpc1:ch1", "barfieldpc2:ch1")]
+colnames(GSE116380.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Disease_Status", "Famine", "City", "Sentrix_ID", "Sentrix_Position", "Bcell", "CD4T", "CD8T", "Mono", "NK", "BarfieldPC1", "BarfieldPC2")
+
+# GSE69176
+Samp <- BLD$GSE69176$GSE69176_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE69176"
+pd$tissue <- "CB"
+pd$sex <- pd$`Sex:ch1` %>% gsub("female", "F", .)  %>% gsub("male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$description) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$description) %>% gsub("_.*", "", .)
+GSE69176.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "chip", "position")]
+colnames(GSE69176.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Sentrix_ID", "Sentrix_Position")
+
+# GSE103541
+Samp <- BLD$GSE103541$GSE103541_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE103541"
+pd$tissue <- gsub(".*B.*", "Bcell", pd$`cell type:ch1`) %>% gsub(".*CD4.*", "CD4T", .) %>% gsub(".*CD8.*", "CD8T", .) %>% 
+    gsub(".*Gran.*", "Gran", .) %>% gsub(".*Mon.*", "Mono", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE103541.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "patient number:ch1", "chip", "position")]
+colnames(GSE103541.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Individual", "Sentrix_ID", "Sentrix_Position")
+
+# GSE67530
+Samp <- BLD$GSE67530$GSE67530_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE67530"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`male:ch1` %>% gsub("0", "F", .)  %>% gsub("1", "M", .)
+pd$ethnicity <- pd$`black:ch1` %>% gsub("0", "European_descent", .) %>% gsub("1", "African_descent", .)
+GSE67530.m <- pd[, c("cohort", "geo_accession", "description", "data_processing", "platform_id", "tissue", "sex", "age", "ethnicity")]
+colnames(GSE67530.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Ancestry")
+
+# GSE58888
+Samp <- BLD$GSE58888$GSE58888_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE58888"
+pd$tissue <- "PBMC"
+pd$sex <- pd$`Sex:ch1` %>% gsub("female", "F", .)  %>% gsub("ale", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE58888.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age group:ch1", "maternal age at death:ch1", "paternal age at death:ch1", "percentage of cd14+ cells:ch1", "percentage of cd4+cd28- cells:ch1", "percentage of cd8+cd28- cells:ch1", "ratio of cd4+/cd8+ cells:ch1")]
+colnames(GSE58888.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age_Group", "Maternal_Age_Death", "Paternal_Age_Death", "CD14_Percentage", "CD4_Percentage", "CD8_Percentage", "CD4_CD8_Ratio")
+
+# GSE79257
+Samp <- BLD$GSE79257$GSE79257_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE79257"
+pd$tissue <- "DBS"
+pd$age <- 0
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE79257.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "conception type:ch1", "chip", "position")]
+colnames(GSE79257.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Conception_Type", "Sentrix_ID", "Sentrix_Position")
+
+# GSE89251
+Samp <- BLD$GSE89251$GSE89251_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE89251"
+pd$tissue <- "CD4T"
+pd$age <- as.numeric(pd$`age (ys):ch1`)
+pd$sex <- pd$`Sex:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$disease <- gsub("flare", "Juvenile idiopathic arthritis", pd$`clinical activity:ch1`) %>% 
+    gsub("ID", "Inactive disease", .) %>% gsub("NO ID", "No inactive disease", .)
+GSE89251.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "disease", "chip", "position")]
+colnames(GSE89251.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Disease_Status", "Sentrix_ID", "Sentrix_Position")
+# Transcriptomic data available at GSE89252
+
+# GSE71955
+Samp <- BLD$GSE71955$GSE71955_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE71955"
+pd$tissue <- gsub(" T.*", "T", pd$`cell type:ch1`)
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE71955.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "diagnosis:ch1", "chip", "position")]
+colnames(GSE71955.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Disease_Status", "Sentrix_ID", "Sentrix_Position")
+# Transctriptomic data available at GSE71956
+# ChIP-seq data available at GSE71952
+
+# GSE88929
+Samp <- BLD$GSE88929$GSE88929_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE88929"
+pd$tissue <- "CB"
+pd$age <- 0
+pd$sex <- pd$`gender:ch1` %>% gsub("female", "F", .)  %>% gsub("male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE88929.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "gestational week:ch1", "birth weight (g):ch1", "blood ph:ch1", "hba1c:ch1", "maternal age (yr):ch1", "maternal bmi:ch1", "maternal height (cm):ch1", "weight before birth(kg):ch1", "weight before pregnancy (kg):ch1", "mode of birth:ch1", "nicotine consumption:ch1", "placenta weight:ch1", "sample group:ch1")]
+colnames(GSE88929.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Gestational_Age", "Birth_Weight", "Blood_pH", "HBA1C", "Maternal_Age", "Maternal_BMI", "Maternal_Height_cm", "Maternal_Weight_Before_Birth_kg", "Maternal_Weight_After_Birth_kg", "Delivery_Mode", "Maternal_Nicotine_Consumption", "Placenta_Weight", "Maternal_Disease_Status")
+
+# GSE118144
+Samp <- BLD$GSE118144$GSE118144_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE118144"
+pd$tissue <- gsub(".*B.*", "Bcell", pd$`tissue:ch1`) %>% gsub(".*16.*", "Neu", .) %>% gsub(".*CD4+.*", "CD4T", .) %>% gsub(".*CD8.*", "CD8T", .) %>% gsub(".*blood", "WB", .)
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE118144.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "diagnosis:ch1", "chip", "position")]
+colnames(GSE118144.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Disease_Status", "Sentrix_ID", "Sentrix_Position")
+
+# GSE107459
+Samp <- BLD$GSE107459$GSE107459_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE107459"
+pd$tissue <- "PBMC"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`Sex:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$individual <- gsub("_[0-9]", "", pd$title)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE107459.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "race:ch1", "individual", "ga sample:ch1", "fetal intolerance:ch1", "pregnancy complication:ch1", "visit:ch1", "chip", "position")]
+colnames(GSE107459.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Ancestry", "Individual", "Gestational_Stage", "Fetal_Intolerance", "Pregnancy_Complication", "Visit", "Sentrix_ID", "Sentrix_Position")
+# Transcriptomic data available at GSE107437
+
+# GSE93933
+Samp <- BLD$GSE93933$GSE93933_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE93933"
+pd$tissue <- "WB"
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE93933.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sample group:ch1", "chip", "position")]
+colnames(GSE93933.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Disease_Status", "Sentrix_ID", "Sentrix_Position")
+
+# GSE59592
+Samp <- BLD$GSE59592$GSE59592_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE59592"
+pd$tissue <- "WB"
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$title) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$title) %>% gsub("_.*", "", .)
+GSE59592.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "gender:ch1", "afb1 exposure:ch1", "season:ch1", "chip", "position")]
+colnames(GSE59592.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "AFB1_Exposure", "Season", "Sentrix_ID", "Sentrix_Position")
+
+# GSE68194
+Samp <- BLD$GSE68194$GSE68194_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE68194"
+pd$tissue <- "PBMC"
+pd$life <- gsub("1", "Died", pd$`status (0=alive; 1=died):ch1`) %>% gsub("0", "Alive", .)
+pd$sex <- pd$`sex (1=woman; 0=man):ch1` %>% gsub("1", "F", .)  %>% gsub("0", "M", .)
+GSE68194.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "body mass index (bmi):ch1", "cd14+ cell proportion:ch1", "cd4+cd28- cell proportion:ch1", "cd4+/cd8+ cell ratio:ch1", "cd8+cd28- cell proportion:ch1", "follow-up time in days:ch1", "methylation batch:ch1", "mini mental state examination (mmse):ch1", "life")]
+colnames(GSE68194.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "BMI", "CD14", "CD4T", "CD4_CD8_Ratio", "CD8T", "Followup_Time_days", "Batch", "Mini_Mental_State_Examination", "Alive")
+
+# GSE87095
+Samp <- BLD$GSE87095$GSE87095_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE87095"
+pd$tissue <- "Bcell"
+pd$id <- gsub(".* ", "", pd$title)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE87095.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "disease state:ch1", "chip", "position")]
+colnames(GSE87095.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Disease_Status", "Sentrix_ID", "Sentrix_Position")
+
+# GSE53840
+Samp <- BLD$GSE53840$GSE53840_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE53840"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age (yrs):ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("female", "F", .)  %>% gsub("male", "M", .)
+pd$disease <- gsub("positve", "HIV", pd$`hivstatus:ch1`)
+GSE53840.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "disease", "bmi:ch1", "samplechips12:ch1", "stripe:ch1", "cd3tcellperc:ch1", "cd4tcellperc:ch1", "cd8tcellperc:ch1", "monocytesperc:ch1", "granulocyteperc:ch1", "lymphocytesperc:ch1", "whitebloodcellperc:ch1", "dnamage:ch1", "hiv.viral.load:ch1", "logviralloadadjustedforage:ch1", "nadir.cd4:ch1", "ratiocd38moleculesvscd8tcells:ch1", "ratiocd4vscd8:ch1")]
+colnames(GSE53840.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Disease_Status", "BMI", "Sentrix_ID", "Sentrix_Position", "CD3T", "CD4T", "CD8T", "Mono", "Gran", "Lymphocytes", "WBC", "DNAmAge", "HIV_load", "HIV_load_adjusted_age", "Nadir_CD4", "CD38_CD8T_ratio", "CD4_CD8_Ratio")
+
+# GSE109914
+Samp <- BLD$GSE109914$GSE109914_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE109914"
+pd$tissue <- "WB"
+pd$sex <- pd$`gender:ch1` %>% gsub("female", "F", .)  %>% gsub("male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE109914.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "disease status:ch1", "arsenic exposure:ch1", "chip", "position")]
+colnames(GSE109914.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Disease_Status", "Arsenic_Exposure", "Sentrix_ID", "Sentrix_Position")
+
+# GSE67393
+Samp <- BLD$GSE67393$GSE67393_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE67393"
+pd$tissue <- "WB"
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE67393.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "disease state:ch1", "chip", "position")]
+colnames(GSE67393.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Disease_Status", "Sentrix_ID", "Sentrix_Position")
+
+# GSE107351
+Samp <- BLD$GSE107351$GSE107351_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE107351"
+pd$tissue <- "WB"
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$disease <- gsub(". Genomi.*", "", pd$`tissue:ch1`)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE107351.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "disease", "chip", "position")]
+colnames(GSE107351.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Disease_Status", "Sentrix_ID", "Sentrix_Position")
+
+# GSE74432
+Samp <- BLD$GSE74432$GSE74432_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE74432"
+pd$tissue <- "WB"
+pd$sex <- pd$`gender:ch1` %>% gsub("female", "F", .)  %>% gsub("male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE74432.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "disease state:ch1", "chip", "position")]
+colnames(GSE74432.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Disease_Status", "Sentrix_ID", "Sentrix_Position")
+
+# GSE129841
+Samp <- BLD$GSE129841$GSE129841_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE129841"
+pd$tissue <- "CB"
+pd$age <- 0
+pd$sex <- pd$`gender:ch1` %>% gsub("female", "F", .)  %>% gsub("male", "M", .)
+GSE129841.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "birth weight:ch1", "fat mass:ch1", "leptin:ch1", "percent fat:ch1")]
+colnames(GSE129841.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Birth_Weight", "Fat_Mass", "Leptin", "Percent_Fat")
+
+# GSE36054
+Samp <- BLD$GSE36054$GSE36054_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE36054"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age at collection months:ch1`) / 12
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE36054.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "gender:ch1", "age", "ethnicity:ch1", "group:ch1", "experiment:ch1", "relation", "sentrix id:ch1", "sentrix position:ch1")]
+colnames(GSE36054.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Ancestry", "Group", "Batch", "Replicates", "Sentrix_ID", "Sentrix_Position")
+
+# GSE52635
+Samp <- BLD$GSE52635$GSE52635_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE52635"
+pd$tissue <- "Buffy"
+pd$chip <- gsub(".*_", "", pd$title) %>% gsub(".R.*", "", .)
+pd$position <- gsub(".*[0-9]{10}.", "", pd$title) %>% gsub(")", "", .)
+GSE52635.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "disease state:ch1", "chip", "position")]
+colnames(GSE52635.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Disease_Status", "Sentrix_ID", "Sentrix_Position")
+
+# GSE64495
+Samp <- BLD$GSE64495$GSE64495_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE64495"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`Sex:ch1` %>% gsub("female", "F", .)  %>% gsub("male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE64495.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "disease status:ch1", "dna methylation age:ch1", "family number:ch1", "relation to proband:ch1")]
+colnames(GSE64495.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Disease_Status", "DNAm_Age", "Family", "Relation_to_Proband")
+
+# GSE112596
+Samp <- BLD$GSE112596$GSE112596_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE112596"
+pd$tissue <- "CD4T"
+pd$age <- as.numeric(pd$`age (years):ch1`)
+GSE112596.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "gender:ch1", "age", "race:ch1", "diagnosis:ch1", "disease duration (months):ch1", "therapy:ch1", "ccr6-ccr4+ percentage:ch1", "ccr6+ccr4- percentage:ch1", "ccr6+ccr4+ percentage:ch1", "cd4 percentage:ch1")]
+colnames(GSE112596.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Ancestry", "Disease_Status", "Disease_Duration_month", "Treatment", "Ccr6-Ccr4+_percentage", "Ccr6+Ccr4-_percentage", "Ccr6+Ccr4+_percentage", "CD4_percentage")
+
+# GSE128064
+Samp <- BLD$GSE128064$GSE128064_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE128064"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age at diagnosis:ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE128064.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "braf status:ch1", "disease state:ch1", "clinical criteria:ch1", "microsatellite instability:ch1", "personal history of cancer:ch1", "chip", "position")]
+colnames(GSE128064.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "BRAF", "Disease_Status", "Diagnosis_Criteria", "Microsatellite_Instability", "Cancer_History", "Sentrix_ID", "Sentrix_Position")
+
+# GSE53045
+Samp <- BLD$GSE53045$GSE53045_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE53045"
+pd$tissue <- "PBMC"
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+GSE53045.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "disease state:ch1")]
+colnames(GSE53045.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Smoking_Status")
+
+# GSE47880
+Samp <- BLD$GSE47880$GSE47880_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE47880"
+pd$tissue <- "WB"
+GSE47880.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "disease state:ch1")]
+colnames(GSE47880.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Disease_Status")
+
+# GSE105123
+Samp <- BLD$GSE105123$GSE105123_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE105123"
+pd$tissue <- "PBMC"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE105123.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "Sex:ch1", "age", "time point:ch1", "subject:ch1", "height (in.):ch1", "weight (kg.):ch1", "chip", "position")]
+colnames(GSE105123.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Time_Point", "Individual", "Height_in", "Weight_kg", "Sentrix_ID", "Sentrix_Position")
+# Transcriptomic data and microRNA expression data available at GSE103927 and GSE106527
+
+# GSE115278
+Samp <- BLD$GSE115278$`GSE115278-GPL21145_series_matrix.txt.gz`
+pd <- pData(Samp)
+pd$cohort <- "GSE115278"
+pd$tissue <- "PBMC"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`Sex:ch1` %>% gsub("Female", "F", .) %>% gsub("Male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE115278.m1 <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "homa-ir:ch1", "waist circumference (cm):ch1", "chip", "position", "study:ch1")]
+colnames(GSE115278.m1) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "HOMA-IR", "Waist_Circumference_cm", "Sentrix_ID", "Sentrix_Position", "Cohort_Subset")
+
+# GSE115278
+Samp <- BLD$GSE115278$`GSE115278-GPL16304_series_matrix.txt.gz`
+pd <- pData(Samp)
+pd$cohort <- "GSE115278"
+pd$tissue <- "PBMC"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`Sex:ch1` %>% gsub("Female", "F", .) %>% gsub("Male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE115278.m2 <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "homa-ir:ch1", "waist circumference (cm):ch1", "chip", "position", "study:ch1")]
+colnames(GSE115278.m2) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "HOMA-IR", "Waist_Circumference_cm", "Sentrix_ID", "Sentrix_Position", "Cohort_Subset")
+
+# GSE124366
+Samp <- BLD$GSE124366$GSE124366_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE124366"
+pd$age <- as.numeric(pd$`age at sample collection (years):ch1`)
+GSE124366.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue:ch1", "Sex:ch1", "age", "sentrix id:ch1", "sentrix position:ch1", "sample well:ch1", "plate id:ch1")]
+colnames(GSE124366.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Sentrix_ID", "Sentrix_Position", "Well", "Plate")
+
+# GSE110607
+Samp <- BLD$GSE110607$GSE110607_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE110607"
+pd.app <- read.csv("Reference_additional_info/GSE110607_appendix.csv") # Came from Table 1 from the paper
+pd$tissue <- pd$`cell type:ch1` %>% gsub("B-.*", "Bcell", .) %>% gsub("CD4.*", "CD4T", .) %>% 
+    gsub("Gran.*", "Gran", .) %>% gsub("Mon.*", "Mono", .)
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$individual <- gsub("_.*", "", pd$title)
+pd$twin <- gsub("a|b", "", pd$individual)
+pd <- merge(pd, pd.app, by.x = "individual", by.y = "Twin_ID") # Very confusing because the metadata from GEO does not match with the metadata from the original paper. Need to do sex prediction on 13a&b twin to determine which metadata is correct. For now, I am using the paper's metadata
+#https://onlinelibrary.wiley.com/doi/full/10.1002/art.40422 paper
+GSE110607.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "Sex", "Age", "Diagnosis", "ACR_criteria_n", "SLEDAI", "ANA", "Anti.DNA", "Current_medication", "individual", "twin", "Zygosity", "chip", "position")]
+colnames(GSE110607.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Disease_Status", "ACR_criteria_n", "SLEDAI_Score", "Antinuclear_Antibody", "Anti_DNA", "Medication_Current", "Individual", "Twin", "Zygosity", "Sentrix_ID", "Sentrix_Position")
+
+# GSE62992
+Samp <- BLD$GSE62992$GSE62992_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE62992"
+pd$tissue <- "WB"
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+# No age, only birthday - sample is collected between 2004 and 2007 https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3600616/?report=reader#!po=22.0000
+GSE62992.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "date born:ch1", "disease state:ch1", "450k chip:ch1", "order on 450k chip:ch1")]
+colnames(GSE62992.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Birthday", "Disease_Status", "Sentrix_ID", "Sentrix_Position")
+
+# GSE64380
+Samp <- BLD$GSE64380$GSE64380_series_matrix.txt.gz
+pd <- pData(Samp)
+GSE64380_appendix <- read_excel("Reference_additional_info/GSE64380_appendix.xlsx") # patient profile from the paper https://www.sciencedirect.com/science/article/pii/S1769721215000919?via%3Dihub#appsec1
+GSE64380_appendix$patient <- paste0("ID ", GSE64380_appendix$patient)
+
+pd$cohort <- "GSE64380"
+pd$tissue <- "WB"
+pd$individual <- gsub("DNA from ", "", pd$title) %>% gsub("individual ", "", .)
+pd <- merge(pd, GSE64380_appendix[, 1:3], by.x = "individual", by.y = "patient", all.x = T) # Add only basic info. The detailed phenotype can be evaluated later
+pd$age <- as.numeric(pd$`age at last evaluation` %>% gsub("4 months", 4/12, .) %>% gsub("7 months", 7/12, .))
+pd$sex <- pd$sex %>% gsub("female", "F", .)  %>% gsub("male", "M", .)
+GSE64380.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "individual", "sex", "age", "diagnosis:ch1")]
+colnames(GSE64380.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Individual", "Sex", "Age", "Disease_Status")
+
+# GSE43975
+Samp <- BLD$GSE43975$GSE43975_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE43975"
+pd$tissue <- "WB"
+# age 23-36
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$twin <- pd$`twin pair:ch1` %>% gsub("_.*", "", .)
+GSE43975.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "disease state:ch1", "twin")]
+colnames(GSE43975.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Disease_Status", "Twin")
+
+# GSE56553
+Samp <- BLD$GSE56553$GSE56553_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE56553"
+pd$tissue <- "PBMC"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$disease <- gsub("yes", "asthma", pd$`asthma diagnosis:ch1`) %>% gsub("no", "normal", .)
+GSE56553.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "Sex:ch1", "age", "disease", "height (cm):ch1", "mass (kg):ch1", "bmi:ch1", "ethnicity:ch1", "fev1 % predicted:ch1", "gstp1 genotype:ch1", "methacholine responsive:ch1", "sample treatment:ch1", "time (hr):ch1", "atopy:ch1")]
+colnames(GSE56553.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Disease_Status", "Height_cm", "Weight_kg", "BMI", "Ancestry", "FEV1_percentage", "GSTP1_Genotype", "Methacholine_Responsive", "Treatment", "Treatment_Time_hr", "Treatment_Atopic")
+
+# GSE78904
+Samp <- BLD$GSE78904$GSE78904_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE78904"
+pd$tissue <- "Buffy"
+pd$disease <- gsub("case", "early_onset_HCC", pd$`disease status:ch1`)
+# No age, mean age 43.6
+# https://onlinelibrary.wiley.com/doi/full/10.1002/mc.22505
+pd$sex <- pd$`gender:ch1` %>% gsub("female", "F", .)  %>% gsub("male", "M", .)
+GSE78904.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "disease", "individual:ch1")]
+colnames(GSE78904.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Disease_Status", "HBsAg_Carrier")
+
+# GSE41169
+Samp <- BLD$GSE41169$GSE41169_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE41169"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+GSE41169.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "sentrix barcode:ch1", "sentrix position:ch1", "plate:ch1", "well id:ch1")]
+colnames(GSE41169.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Sentrix_ID", "Sentrix_Position", "Plate", "Well")
+
+# GSE43976
+Samp <- BLD$GSE43976$GSE43976_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE43976"
+pd$tissue <- pd$source_name_ch1 %>% gsub("CD14.*", "Mono", .) %>% gsub("Peri.*", "WB", .)
+pd$disease <- gsub("case", "MS", pd$`ms_case_control:ch1`)
+pd$age <- as.numeric(pd$`age_sampling:ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("female", "F", .)  %>% gsub("male", "M", .)
+GSE43976.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "disease", "py:ch1", "smoking_evernever:ch1", "smoking_5years:ch1", "smoke_free_years:ch1", "slide:ch1", "array:ch1", "sample_year:ch1")] 
+colnames(GSE43976.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Disease_Status", "Pack_Year", "Smoking_History", "Smoking_5Years", "Smoke_Free_Years", "Sentrix_ID", "Sentrix_Position", "Sample_Year")
+# Pack_Year = PY = (cigarettessmokedper/day20)∗yearsassmoker, assuming 20 cigarettes per pack.
+
+# GSE78956
+Samp <- BLD$GSE78956$GSE78956_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE78956"
+pd$tissue <- "WB"
+pd$disease <- c(pd$`diagnosis:ch1`[1:9], pd$`(mlid) or (slid) as diagnosed prior to the study:ch1`[10:104]) %>% gsub("none", "control", .)
+GSE78956.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "disease")]
+colnames(GSE78956.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Disease_Status")
+ 
+# GSE110043
+Samp <- BLD$GSE110043$GSE110043_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE110043"
+pd$tissue <- "WB"
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+GSE110043.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "disease state:ch1")]
+colnames(GSE110043.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Disease_Status")
+
+# GSE67751
+Samp <- BLD$GSE67751$GSE67751_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE67751"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("female", "F", .)  %>% gsub("male", "M", .)
+pd$disease <- pd$`hivstatus:ch1` %>% gsub("Positive", "HIV", .) %>% gsub("Negative", "control", .)
+GSE67751.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "disease", "dnamage:ch1", "ageaccelerationresidual:ch1", "ageaccelerationvscontrols:ch1", "cd4 t cells:ch1", "cd8 t cells:ch1", "b cells:ch1", "exhausted cd8t cells:ch1", "monocytes:ch1", "naïve cd4 t cells:ch1", "naïve cd8 t cells:ch1", "natural killer:ch1", "granulocytes:ch1")]
+colnames(GSE67751.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Disease_Status", "DNAmAge", "EAA", "EAA_vs_controls", "CD4T", "CD8T", "Bcell", "CD8T_Exhausted", "Mono", "CD4T_Naive", "CD8T_Naive", "NK", "Gran")
+
+# GSE89093
+Samp <- BLD2$GSE89093.GSE89093_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE89093"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age at blood sample:ch1`)
+pd$age_diagnosis <- as.numeric(pd$`age at diagnosis minus age at blood sampling:ch1`) + pd$age
+pd$sex <- pd$`gender:ch1` %>% gsub("female", "F", .) %>% gsub("male", "M", .)
+pd$chip <- gsub("_.*", "", pd$`beadchip and order on beadchip (sentrix id):ch1`)
+pd$position <- gsub(".*_", "", pd$`beadchip and order on beadchip (sentrix id):ch1`)
+GSE89093.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "age_diagnosis", "cancer status:ch1", "cancer location:ch1", "histology:ch1", "icd information:ch1", "chip", "position", "twin pair id:ch1")]
+colnames(GSE89093.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Age_Diagnosis", "Disease_Status", "Cancer_Type", "Cancer_Histology", "Cancer_ICD", "Sentrix_ID", "Sentrix_Position", "Twin_ID")
+
+# GSE69636
+Samp <- BLD2$GSE69636.GSE69636_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE69636"
+pd$tissue <- gsub("Umbilical.*", "CB", pd$source_name_ch1) %>% gsub("H9.*", "hESCs", .)
+pd$age <- c(rep(0, sum(pd$tissue == "CB")), rep(NA, sum(pd$tissue == "hESCs")))
+pd$GA <- as.numeric(pd$`gestational age:ch1`)
+pd$BW <- as.numeric(pd$`birth weight:ch1`)
+pd$Pb <- as.numeric(pd$`pbconc (ng/dl):ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE69633.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "cell line:ch1", "sex", "age", "GA", "BW", "Pb", "smoke ever:ch1", "socioeconomic score:ch1", "sample type:ch1", "ip antibody:ch1", "agent:ch1", "dose:ch1", "chip", "position")]
+colnames(GSE69633.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Cell_Line", "Sex", "Age", "Gestational_Age", "Birth_Weight", "Lead_Exposure_ng_per_dl", "Smoke_Exposure", "Socialeconomic_Status", "Technology", "IP_Antibody", "Treatment", "Lead_Treatment_Dosage", "Sentrix_ID", "Sentrix_Position")
+
+# GSE110128
+Samp <- BLD2$GSE110128.GSE110128_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE110128"
+pd$tissue <- gsub("cord.*", "CB", pd$`tissue:ch1`) %>% gsub("mon.*", "PBMC", .) 
+pd$sex <- pd$`gender:ch1` %>% gsub("female", "F", .)  %>% gsub("male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE110128.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "allergy:ch1", "batch:ch1")]
+colnames(GSE110128.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Disease_Status", "Batch")
+
+# GSE52588
+Samp <- BLD2$GSE52588.GSE52588_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE52588"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+GSE52588.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "disease state:ch1", "family:ch1", "group:ch1")]
+colnames(GSE52588.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Disease_Status", "Family_ID", "Relationship")
+
+# GSE77445
+Samp <- BLD2$GSE77445.GSE77445_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE77445"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE77445.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "race:ch1", "sex", "age", "sentrix:ch1", "position:ch1", "total score on the childhood trauma questionnaire:ch1", "total score on the life stressor checklist- revised:ch1", "cortisol stress response area under the curve (auc) with respect to the increase:ch1", "bcell proportion:ch1", "cd4 t cell proportion:ch1", "cd8 t cell proportion:ch1", "monocytes cell proportion:ch1", "natural killer cell proportion:ch1", "granulocytes cell proportion:ch1")]
+colnames(GSE77445.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Ancestry", "Sex", "Age", "Sentrix_ID", "Sentrix_Position", "Childhood_Trauma_Score", "Life_Stressor_Score", "Cortisol_Stress_Response", "Bcell", "CD4T", "CD8T", "Mono", "NK", "Gran")
+
+# GSE72776
+Samp <- BLD2$GSE72776.GSE72776_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE72776"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`Sex:ch1` %>% gsub("female", "F", .)  %>% gsub("male", "M", .)
+GSE72776.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "ethnicity:ch1", "sex", "age", "disease status:ch1", "dnamage:ch1", "bioage4hastatic:ch1", "b cell:ch1", "cd4t:ch1", "cd8t:ch1", "monocyte:ch1", "natural killer cell:ch1", "granulocyte:ch1")]
+colnames(GSE72776.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Ancestry", "Sex", "Age", "Disease_Status", "DNAmAge", "EEAA", "Bcell", "CD4T", "CD8T", "Mono", "NK", "Gran")
+
+# GSE59685
+Samp <- BLD2$GSE59685.GSE59685_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE59685"
+pd$tissue <- pd$`source tissue:ch1` %>% gsub("whole.*", "WB", .)
+pd$age <- 0
+for (i in 1:nrow(pd)) {
+    if(pd$tissue[i] == "WB") {pd$age[i] <- pd$`age.blood:ch1`[i]}
+    else {pd$age[i] <- pd$`age.brain:ch1`[i]}
+}
+pd$age <- as.numeric(pd$age)
+pd$sex <- pd$`Sex:ch1` %>% gsub("FEMALE", "F", .)  %>% gsub("MALE", "M", .)
+pd$disease <- pd$`ad.disease.status:ch1` %>% gsub("C", "control", .)
+pd$chip <- gsub("_.*", "", pd$`barcode:ch1`)
+pd$position <- gsub("_.*", "", pd$`barcode:ch1`)
+GSE59685.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "subjectid:ch1", "relation", "disease", "braak.stage:ch1", "chip", "position")]
+colnames(GSE59685.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Individual_ID", "Relationship", "Disease_Status", "Braak_Stage", "Sentrix_ID", "Sentrix_Position")
+
+# GSE76399
+Samp <- BLD2$GSE76399.GSE76399_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE76399"
+pd$tissue <- gsub(".*omen.*", "omental adipose", pd$source_name_ch1) %>% gsub(".*blood.*", "WB", .) %>% gsub(".*sub.*", "subcutaneous adipose", .)
+pd$sex <- pd$`gender:ch1` %>% gsub("female", "F", .)  %>% gsub("male", "M", .)
+pd$disease <- pd$`disease state:ch1` %>% gsub("no.*", "control", .)
+GSE76399.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "individual identifier:ch1", "disease", "phenotype:ch1")]
+colnames(GSE76399.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Individual", "Disease_Status", "Obesity_Status")
+
+# GSE36064
+Samp <- BLD2$GSE36064.GSE36064_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE36064"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age at collection months:ch1`)
+pd$age <- pd$age / 12
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE36064.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "gender:ch1", "age", "ethnicity:ch1", "relation", "group:ch1", "sentrix id:ch1", "sentrix position:ch1")]
+colnames(GSE36064.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Ancestry", "Relationship", "Cohort_subset", "Sentrix_ID", "Sentrix_Position")
+
+# GSE93266
+Samp <- BLD2$GSE93266.GSE93266_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE93266"
+pd$tissue <- "PBMC"
+pd$sex <- pd$`Sex:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE93266.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "disease state:ch1", "chip", "position")]
+colnames(GSE93266.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Disease_Status", "Sentrix_ID", "Sentrix_Position")
+
+# GSE73412
+Samp <- BLD2$GSE73412.GSE73412_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE73412"
+pd$tissue <- "WB"
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE73412.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "origin:ch1", "y haplotype:ch1", "family relationship:ch1", "chip", "position")]
+colnames(GSE73412.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Ancestry", "ChromosomeY_Haplotype", "Relationship", "Sentrix_ID", "Sentrix_Position")
+
+# GSE80553
+Samp <- BLD2$GSE80553.GSE80553_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE80553"
+pd$tissue <- "CD4T_Naive"
+pd$age <- as.numeric(pd$`age (yrs):ch1`)
+pd$sex <- pd$`Sex:ch1` %>% gsub("female", "F", .)  %>% gsub("Male", "M", .)
+pd$disease <- "Systemic lupus erythematosus"
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE80553.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "ethnicity:ch1", "disease", "sledai score:ch1")]
+colnames(GSE80553.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Ancestry", "Disease_Status", "SLEDAI_Score")
+
+# GSE104778
+Samp <- BLD2$GSE104778.GSE104778_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE104778"
+pd$tissue <- "CB"
+pd$age <- 0
+pd$sex <- pd$`gender:ch1` %>% gsub("female", "F", .)  %>% gsub("male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE104778.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "chip", "position")]
+colnames(GSE104778.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Sentrix_ID", "Sentrix_Position")
+
+# GSE107205
+Samp <- BLD2$GSE107205.GSE107205_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE107205"
+pd$tissue <- "WB"
+pd$sex <- pd$`Sex:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$individual <- gsub(".*_", "", pd$title)
+pd$treatment <- gsub("\\..*", "", pd$individual)
+pd$timepoint <- gsub("PWBC_", "", pd$title) %>% gsub("_.*", "", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE107205.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "individual", "treatment", "timepoint", "chip", "position")]
+colnames(GSE107205.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Individual", "Treatment", "Time_Point", "Sentrix_ID", "Sentrix_Position")
+
+# GSE85042
+Samp <- BLD2$GSE85042.GSE85042_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE85042"
+pd$tissue <- "CB"
+pd$age <- 0
+pd$matage <- as.numeric(pd$`age of the mother:ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE85042.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "matage", "gestational stress:ch1", "smoking cigarettes during pregnancy:ch1", "chip", "position")]
+colnames(GSE85042.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Maternal_Age", "Gestational_Stress", "Gestational_Smoking", "Sentrix_ID", "Sentrix_Position")
+
+# GSE67444
+Samp <- BLD2$GSE67444.GSE67444_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE67444"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age (months):ch1`) / 12
+pd$gestage <- as.numeric(pd$`gestational age (months):ch1`) / 7
+pd$matage <- as.numeric(pd$`mother's age (months):ch1`) / 12 
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE67444.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "gender:ch1", "age", "gestage", "matage", "mother's blood lead level:ch1", "sample blood lead level:ch1", "smoking:ch1", "chip", "position")]
+colnames(GSE67444.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Gestational_Age", "Maternal_Age", "Lead_Concentration_Maternal", "Lead_Concentration", "Gestational_Smoking", "Sentrix_ID", "Sentrix_Position")
+
+# GSE123914
+Samp <- BLD2$GSE123914.GSE123914_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE123914"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- "F"
+pd$timepoint <- gsub("2013", "T1", pd$`year of collection:ch1`) %>% gsub("2014", "T2", .)
+pd$individual <- pd$characteristics_ch1 %>% gsub(".*id: ", "", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE123914.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "individual", "timepoint", "chip", "position", "year of collection:ch1", "bcell:ch1", "cd4t:ch1", "cd8t:ch1", "gran:ch1", "mono:ch1", "nk:ch1")]
+colnames(GSE123914.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Individual", "Time_Point", "Sentrix_ID", "Sentrix_Position", "Collection_Year", "Bcell", "CD4T", "CD8T", "Gran", "Mono", "NK")
+
+# GSE67170
+Samp <- BLD2$GSE67170.GSE67170_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE67170"
+pd$tissue <- gsub("T cell", "Tcell", pd$`cell type:ch1`)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE67170.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "disease state:ch1", "chip", "position")]
+colnames(GSE67170.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Disease_Status", "Sentrix_ID", "Sentrix_Position")
+
+# GSE72867 
+# Very confusing study - labeled as cord blood here but appeared to be adult blood in the paper (https://epigeneticsandchromatin.biomedcentral.com/articles/10.1186/s13072-016-0077-1#Tab1)
+# Apparently 12 types of lentiviral treatments were applied - but unclear here what is what
+# Not gonna include this in the database
+
+# GSE98056
+Samp <- BLD2$GSE98056.GSE98056_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE98056"
+pd$tissue <- "WB"
+pd$sex <- pd$`Sex:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE98056.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "status:ch1", "chip", "position")]
+colnames(GSE98056.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Treatment", "Sentrix_ID", "Sentrix_Position")
+
+# GSE88824
+Samp <- BLD2$GSE88824.GSE88824_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE88824"
+pd$tissue <- gsub("Neu.*", "Neu", pd$`cell type:ch1`) %>% gsub("NK.*", "NK", .) %>% gsub("Whole.*", "WB", .) %>% gsub("CD19.*", "Bcell", .) %>% gsub("Mono.*", "Mono", .)
+pd$disease <- gsub("Case", "multiple sclerosis", pd$`disease state:ch1`)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE88824.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "person id:ch1", "disease", "sentrix id:ch1", "sentrix row & column:ch1")]
+colnames(GSE88824.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Individual", "Disease_Status", "Sentrix_ID", "Sentrix_Position")
+
+# GSE64244
+Samp <- BLD2$GSE64244.GSE64244_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE64244"
+pd$tissue <- "WB"
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+GSE64244.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "disease status:ch1")]
+colnames(GSE64244.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Disease_Status")
+
+# GSE79237
+Samp <- BLD2$GSE79237.GSE79237_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE79237"
+pd$tissue <- "CD4T"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$chip <- gsub("_.*", "", pd$title)
+pd$position <- gsub(".*_", "", pd$title)
+GSE79237.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "race:ch1", "chip", "position")]
+colnames(GSE79237.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Ancestry", "Sentrix_ID", "Sentrix_Position")
+
+# GSE41273
+Samp <- BLD2$GSE41273.GSE41273_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE41273"
+pd$tissue <- "WB"
+pd$sex <- pd$`gender:ch1` %>% gsub("female", "F", .)  %>% gsub("male", "M", .)
+pd$disease <- gsub("Case", "Fragile X syndrome", pd$`phenotype:ch1`)
+GSE41273.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "disease")]
+colnames(GSE41273.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Disease_Status")
+
+# GSE104451
+Samp <- BLD2$GSE104451.GSE104451_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE104451"
+pd$tissue <- "WB"
+pd$age <- 8
+pd$sex <- pd$`gender:ch1` %>% gsub("female", "F", .)  %>% gsub("male", "M", .) 
+pd$disease <- gsub("SRS.*", "Silver-Russel sydrome", pd$title) %>% gsub("control.*", "Control", .)
+GSE104451.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "disease", "genotype/variation:ch1")]
+colnames(GSE104451.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Disease_Status", "Genotype")
+
+# GSE120228
+Samp <- BLD2$GSE120228.GSE120228_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE120228"
+pd$tissue <- "PBMC"
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$exposure <- gsub(".*perinatal.*", "perinatal polychlorinated biphenyls and polychlorinated dibenzofurans exposure", pd$`sample group:ch1`) %>% gsub(".*referents.*", "Control", .)
+GSE120228.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "exposure", "sample group:ch1")]
+colnames(GSE120228.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "PCB_PCDF_Exposure", "Cohort_Subset")
+
+# GSE35069
+Samp <- BLD2$GSE35069.GSE35069_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE35069"
+pd$tissue <- gsub("Whole", "WB", pd$`tissue/cell type:ch1`) %>% gsub("Gran.*", "Gran", .) %>% gsub("CD4.*", "CD4T", .) %>% gsub("CD8.*", "CD8T", .) %>% gsub("CD14.*", "Mono", .) %>% gsub("CD19.*", "Bcell", .) %>% gsub("Neu.*", "Neu", .) %>% gsub("CD56.*", "NK", .) %>% gsub("Eos.*", "Eos", .)
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+GSE35069.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex")]
+colnames(GSE35069.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex")
+
+# GSE51388
+Samp <- BLD2$GSE51388.GSE51388_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE51388"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$twinID <- gsub(".*pair_", "", pd$title) %>% gsub("Group B.*", NA, .) %>% gsub("_[AB].*", "", .)  %>% gsub(" ", "", .)
+pd$twin <- gsub("#.*", "MZ", pd$twinID)
+pd$timepoint <- gsub(".*[ABCDEFGH]_", "", pd$title) %>% gsub(".*pair_ .*", NA, .) %>% gsub("_rep.*", "", .) %>% gsub("rep.*", NA, .)
+pd$individual <- gsub(".*#", "", pd$title) %>% gsub("Group B_", "", .) %>% gsub("_[0-9].*", "", .) %>% gsub("_rep.*", "", .) 
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE51388.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "twin", "twinID", "individual", "timepoint")]
+colnames(GSE51388.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Twin", "Twin_ID", "Individual", "Time_Point")
+
+# GSE63499
+Samp <- BLD2$GSE63499.GSE63499_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE63499"
+pd$tissue <- gsub("CD16+", "Neu", pd$`celltype:ch1`) %>% gsub("Whole.*", "WB", .)
+pd$sex <- "F"
+pd$individual <- gsub("\\..*", "", pd$title)
+GSE63499.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "individual", "timepoint:ch1", "obesity:ch1")]
+colnames(GSE63499.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Individual", "Time_Point", "Obesity_Status")
+
+# GSE43414
+Samp <- BLD3$GSE43414$GSE43414_series_matrix.txt.gz
+pd <- pData(Samp)
+pd <- pd[pd$`source tissue:ch1` == "whole blood", ]
+pd$cohort <- "GSE43414"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age.blood:ch1`)
+pd$sex <- pd$`Sex:ch1` %>% gsub("FEMALE", "F", .)  %>% gsub("MALE", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$`barcode:ch1`) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$`barcode:ch1`) %>% gsub("_.*", "", .)
+pd$disease <- gsub("AD", "Alzheimer's disease", pd$`ad.disease.status:ch1`) %>% gsub("C", "control", .)
+pd$braak <- as.numeric(pd$`braak.stage:ch1`)
+pd$replicate <- gsub(TRUE, "GSE59685", pd$`lunnonetal:ch1`) %>% gsub(FALSE, NA, .)
+GSE43414.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "subjectid:ch1", "sex", "age", "disease", "braak", "replicate", "chip", "position")]
+colnames(GSE43414.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Individual", "Sex", "Age", "Disease_Status", "Replicate", "Braak_Stage", "Sentrix_ID", "Sentrix_Position")
+
+# GSE117861 - 450k
+Samp <- BLD3$GSE117861$`GSE117861-GPL16304_series_matrix.txt.gz`
+pd <- pData(Samp)
+pd$cohort <- "GSE117861"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`Sex:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$chip <- gsub(".*from ", "", pd$title) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*from ", "", pd$title) %>% gsub(".*_", "", .)
+pd$disease <- gsub(1, "HIV", pd$`hiv:ch1`) %>% gsub(0, "control", .)
+GSE117861.m1 <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "race:ch1", "sex", "age", "disease", "artadherence:ch1", "smoking:ch1", "chip", "position", "bcell:ch1", "mono:ch1", "nk:ch1", "cd4t:ch1", "cd8t:ch1", "gran:ch1", "wbc_new:ch1")]
+colnames(GSE117861.m1) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Ancestry", "Sex", "Age", "Disease_Status", "Art_Medication", "Smoking_Status", "Sentrix_ID", "Sentrix_Position", "Bcell", "Mono", "NK", "CD4T", "CD8T", "Gran", "WBC_Count")
+
+# GSE117861 - EPIC
+Samp <- BLD3$GSE117861$`GSE117861-GPL21145_series_matrix.txt.gz`
+pd <- pData(Samp)
+pd$cohort <- "GSE117861"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`Sex:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$chip <- gsub(".*from ", "", pd$title) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*from ", "", pd$title) %>% gsub("_.*", "", .)
+pd$disease <- gsub(1, "HIV", pd$`hiv:ch1`) %>% gsub(0, "control", .)
+GSE117861.m2 <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "race:ch1", "sex", "age", "disease", "artadherence:ch1", "smoking:ch1", "chip", "position", "bcell_850k:ch1", "mono_850k:ch1", "nk_850k:ch1", "cd4t_850k:ch1", "cd8t_850k:ch1", "gran_850k:ch1", "wbc_new:ch1")]
+colnames(GSE117861.m2) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Ancestry", "Sex", "Age", "Disease_Status", "Art_Medication", "Smoking_Status", "Sentrix_ID", "Sentrix_Position", "Bcell", "Mono", "NK", "CD4T", "CD8T", "Gran", "WBC_Count")
+
+# GSE131433
+Samp <- BLD3$GSE131433$GSE131433_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE131433"
+pd$tissue <- gsub("Guthrie.*", "DBS", pd$`sample type:ch1`) %>% gsub("Whole.*", "WB", .)
+pd$age <- gsub("DBS", 0, pd$tissue) %>% gsub("WB", NA, .) %>% as.numeric()
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE131433.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "gender:ch1", "age", "art status:ch1", "art subtype:ch1", "chip", "position")]
+colnames(GSE131433.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Assisted_Reproductive_Status", "Assisted_Reproductive_Subtype", "Sentrix_ID", "Sentrix_Position")
+
+# GSE60275 not included - from other GEO
+
+# GSE61496
+Samp <- BLD3$GSE61496$GSE61496_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE61496"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`sex, 1=m, 2=f:ch1` %>% gsub("2", "F", .)  %>% gsub("1", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$relative_bw <- gsub("1", "higher_weight_twin", pd$`birth-weight:ch1`) %>% gsub("0", "lower_weight_twin", .)
+GSE61496.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "pair id:ch1", "sex", "age", "relative_bw", "chip", "position")]
+colnames(GSE61496.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Twin_ID", "Sex", "Age", "Relative_Birth_Weight", "Sentrix_ID", "Sentrix_Position")
+
+# GSE60132
+Samp <- BLD3$GSE60132$GSE60132_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$sample <- gsub(" .*", "", pd$title)
+pd$cohort <- "GSE60132"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+GSE60132.m <- pd[, c("cohort", "geo_accession", "sample", "data_processing", "platform_id", "tissue", "gender:ch1", "ancestry:ch1", "age")]
+colnames(GSE60132.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Ancestry", "Age")
+
+# GSE61151
+Samp <- BLD3$GSE61151$GSE61151_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE61151"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`agebloodtaken:ch1`)
+pd$gap <- as.numeric(pd$`agegap:ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+GSE61151.m <- pd[, c("cohort", "geo_accession", "label:ch1", "data_processing", "platform_id", "tissue", "sex", "age", "gap", "disease state:ch1", "subjectid for matching:ch1", "dup_label:ch1", "ChIP:ch1", "row:ch1", "plate:ch1", "round:ch1")]
+colnames(GSE61151.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Age_Gap", "Disease_Status", "Individual", "Replicate", "Sentrix_ID", "Sentrix_Row", "Plate", "Batch")
+
+# GSE89218
+Samp <- BLD3$GSE89218$GSE89218_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE89218"
+pd$tissue <- "WB"
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$disease <- gsub("negative", "control", pd$`ptsd diagnosis:ch1`) %>% gsub("positive", "PTSD", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE89218.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "disease", "chip", "position")]
+colnames(GSE89218.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Disease_Status", "Sentrix_ID", "Sentrix_Position")
+
+# GSE113967
+Samp <- BLD3$GSE113967$GSE113967_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE113967"
+pd$tissue <- "WB"
+pd$sample <- gsub(" .*", "", pd$title)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$ASD_subtype <- gsub("Control", NA, pd$`disease state:ch1`) %>% gsub("ASD", "undefined_etiology", .)
+
+GSE113967.ad <- read_excel("Reference_additional_info/13148_2019_684_MOESM3_ESM.xlsx")
+GSE113967.ad <- unique(GSE113967.ad)
+pd <- left_join(pd, GSE113967.ad, c("sample" = "Sample ID"))
+GSE113967.m <- pd[, c("cohort", "geo_accession", "sample", "data_processing", "platform_id", "tissue", "Sex:ch1", "Age (years)", "ASD status", "ASD_subtype", "chip", "position")]
+colnames(GSE113967.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Disease_Status", "ASD_Subtype", "Sentrix_ID", "Sentrix_Position")
+# Age variable (https://clinicalepigeneticsjournal.biomedcentral.com/articles/10.1186/s13148-019-0684-3/tables/1)
+
+# GSE137594
+Samp <- BLD3$GSE137594$GSE137594_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE137634"
+pd$tissue <- "Bcell"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$individual <- gsub(".* ", "", pd$title)
+GSE137634.m1 <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "individual", "working_diagnosis:ch1", "first_diagnosis:ch1", "chip", "position")]
+colnames(GSE137634.m1) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Individual", "Disease_Status", "First_Diagnosis", "Sentrix_ID", "Sentrix_Position")
+
+# GSE137593
+Samp <- BLD3$GSE137593$GSE137593_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE137634"
+pd$tissue <- "CD4T"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$individual <- gsub(".* ", "", pd$title)
+GSE137634.m2 <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "individual", "working_diagnosis:ch1", "first_diagnosis:ch1", "chip", "position")]
+colnames(GSE137634.m2) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Individual", "Disease_Status", "First_Diagnosis", "Sentrix_ID", "Sentrix_Position")
+
+# GSE59999
+Samp <- BLD3$GSE59999$GSE59999_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE59999"
+pd$tissue <- "PBMC"
+pd$sex <- pd$`gender:ch1` %>% gsub("FEMALE", "F", .)  %>% gsub("MALE", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$title) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$title) %>% gsub(".*_", "", .)
+GSE59999.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "challenge outcome:ch1", "phenotype:ch1", "chip", "position")]
+colnames(GSE59999.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Disease_Status", "Allergen", "Sentrix_ID", "Sentrix_Position")
+
+# GSE62003
+Samp <- BLD3$GSE62003$GSE62003_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE62003"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`Sex:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$individual <- gsub("\\..*", "", pd$title)
+pd$tp <- gsub(".*_", "", pd$source_name_ch1)
+pd$disease <- gsub("_TP[12]", "", pd$source_name_ch1) %>% gsub("Not_[Uu]sed", NA, .)
+GSE62003.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "individual", "disease", "tp")]
+colnames(GSE62003.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Individual", "Disease_Status", "Time_Point")
+
+# GSE62298
+Samp <- BLD3$GSE62298$GSE62298_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE62298"
+pd$tissue <- "WB"
+pd$disease <- "Primary_AML"
+GSE62298.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "disease", "dnmt3a mutation status:ch1")]
+colnames(GSE62298.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Disease_Status", "DNMT3A_Genotype")
+#Hi-seq data on cell line available at GSE62303
+
+# GSE61653
+Samp <- BLD3$GSE61653$GSE61653_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE61653"
+pd$tissue <- gsub(".*B.*", "WB", pd$title) %>% gsub(".*S.*", "S", .)
+pd$individual <- gsub(".*\\[[BS]", "", pd$title) %>% gsub("\\]", "", .)
+GSE61653.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "race:ch1", "individual")]
+colnames(GSE61653.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Ancestry", "Individual")
+
+# GSE62219
+Samp <- BLD3$GSE62219$GSE62219_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE62219"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age (months):ch1`) / 12
+pd$sex <- pd$`gender:ch1` %>% gsub("female", "F", .)  %>% gsub("male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE62219.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "chip", "position")]
+colnames(GSE62219.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Sentrix_ID", "Sentrix_Position")
+
+# GSE80468
+Samp <- BLD3$GSE80468$GSE80468_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE80468"
+pd$tissue <- "WB"
+#pd$age <- 22 to 33
+pd$sex <- "F"
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE80468.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "diagnosis:ch1", "sentrix_id:ch1", "sentrix_position:ch1")]
+colnames(GSE80468.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Disease_Status", "Sentrix_ID", "Sentrix_Position")
+
+# GSE82218
+Samp <- BLD3$GSE82218$GSE82218_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE82218"
+pd$tissue <- "PBMC"
+pd$age <- as.numeric(gsub("y", "", pd$`age:ch1`))
+pd$sex <- pd$`Sex:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$disease <- gsub(".*control.*", "control", pd$title) %>% gsub("SLE p.*", "SLE", .) %>% gsub("SLEpatient.*", "SLE with lupus nephritis", .)
+GSE82218.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "disease")]
+colnames(GSE82218.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Disease_Status")
+# Expression data available at GSE82221
+
+# GSE57204
+Samp <- BLD3$GSE57204$GSE57204_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE57204"
+pd$tissue <- "WB"
+pd$disease <- "SGA"
+GSE57204.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "disease", "rhgh treatment:ch1")]
+colnames(GSE57204.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Disease_Status", "Treatment")
+# GSE57205 is GSE57204 + GSE57105
+
+# GSE79144
+Samp <- BLD3$GSE79144$GSE79144_series_matrix.txt.gz
+pd <- pData(Samp)
+pd <- pd[pd$`tissue:ch1` == "T cells, peripheral blood", ]
+pd$cohort <- "GSE79144"
+pd$tissue <- "Tcell"
+GSE79144.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue")]
+colnames(GSE79144.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue")
+# Genotyping data available at GSE79254
+
+# GSE59550
+Samp <- BLD3$GSE59550$GSE59550_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE59550"
+pd$tissue <- "PBMC"
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+GSE59550.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "group:ch1")]
+colnames(GSE59550.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Smoking_Status")
+
+# GSE44798
+Samp <- BLD3$GSE44798$GSE44798_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE44798"
+pd$tissue <- "WB"
+#pd$age <- as.numeric(pd$`age (years):ch1`) # 1-24yr old
+pd$sex <- pd$`Sex:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$chip <- gsub(".*MS_", "", pd$title) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*_", "", pd$title)
+GSE44798.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "status:ch1", "chip", "position")]
+colnames(GSE44798.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Maternal_Bariatric_Surgery", "Sentrix_ID", "Sentrix_Position")
+
+# GSE103929
+Samp <- BLD3$GSE103929$GSE103929_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE103929"
+pd$tissue <- "Mono"
+pd$age <- as.numeric(pd$`age:ch1`)
+GSE103929.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "gender:ch1", "age", "bmi:ch1", "disease state:ch1", "therapy:ch1")]
+colnames(GSE103929.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "BMI", "Disease_Status", "Treatment")
+
+# GSE110555
+Samp <- BLD3$GSE110555$GSE110555_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE110555"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`Sex:ch1` %>% gsub("Female", "F", .) %>% gsub("Male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$individual <- pd$`time point (days):ch1` %>% gsub(".*", "Lsample", .)
+GSE110555.m <- pd[, c("cohort", "geo_accession", "sample_name:ch1", "data_processing", "platform_id", "individual", "cell type:ch1", "sex", "age", "time point (days):ch1", "date of blood collection:ch1", "ethnic_self:ch1", "ethnicity_wide:ch1", "height_m:ch1", "weight_kg:ch1", "bmi:ch1", "bmi_clas:ch1", "smoker:ch1", "chip", "position", "sample_well:ch1", "bcell:ch1", "cd4t proportion:ch1", "cd8t proportion:ch1", "monocytes proportion:ch1", "neutrophils proportion:ch1", "nk proportion:ch1")]
+colnames(GSE110555.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Individual", "Tissue", "Sex", "Age", "Time_Point", "Sample_Collection_Date", "Ancestry", "Ancestry_Broad", "Height_m", "Weight_kg", "BMI", "Obesity_Status", "Smoking_Status", "Sentrix_ID", "Sentrix_Position", "Well", "Bcell", "CD4T", "CD8T", "Mono", "Neu", "NK")
+
+# GSE104287
+Samp <- BLD3$GSE104287$GSE104287_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE104287"
+pd$tissue <- pd$`gender:ch1` %>% gsub(";.*", "", .)  %>% gsub("a", "", .)
+pd$sex <- pd$`gender:ch1` %>% gsub(".*Female", "F", .)  %>% gsub(".*Male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$treatment <- "Bacille Calmette-Guerin vaccine"
+GSE104287.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "patient id:ch1", "treatment", "time:ch1", "tissue", "sex", "chip", "position")]
+colnames(GSE104287.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Individual", "Treatment", "Time_Point", "Tissue", "Sex", "Sentrix_ID", "Sentrix_Position")
+
+# GSE104812
+Samp <- BLD3$GSE104812$GSE104812_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE104812"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age (y):ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE104812.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "chip", "position")]
+colnames(GSE104812.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Sentrix_ID", "Sentrix_Position")
+
+# GSE32148
+Samp <- BLD3$GSE32148$GSE32148_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE32148"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age (y):ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$twin <- gsub(".*sample", "", pd$`twin:ch1`)
+GSE32148.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "disease state:ch1", "twin")]
+colnames(GSE32148.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Disease_Status", "Twin_ID")
+# Paired colon mucosa sample available at GSE32146
+
+# GSE34639
+Samp <- BLD3$GSE34639$GSE34639_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE34639"
+pd$tissue <- "CD4T"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("female", "F", .)  %>% gsub("male", "M", .)
+pd$treatment <- gsub("CD3", "anti_CD3_IL2", pd$`treatment:ch1`) %>% gsub("CON", "Control", .)
+pd$disease <- gsub("FOOD.*", "IgE_food_allergy", pd$`disease state:ch1`) %>% gsub("NORM", "control", .)
+GSE34639.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "cell type:ch1", "sex", "age", "disease", "treatment")]
+colnames(GSE34639.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Cell_Type", "Sex", "Age", "Disease_Status", "Treatment")
+
+# GSE54399
+Samp <- BLD3$GSE54399$GSE54399_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE54399"
+pd$tissue <- "CB"
+pd$age <- 0
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$bw <- as.numeric(pd$`birth weight-lbs:ch1`) / 2.2
+GSE54399.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "bw")]
+colnames(GSE54399.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Birth_Weight")
+
+# GSE57107
+Samp <- BLD3$GSE57107$GSE57107_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE57107"
+pd$tissue <- "PBMC"
+pd$age <- c(13, 11.58, 13.33, 8.92, 7.92, 7.67, 12.33, 10.67, 7.33, 9.42, 8.67, 15.42, 12.92, 6, 11.58, 6.42, 6.17, 13.33, 11.75, 5.17, 6.92, 13.17, 8, 5.83, 13, 11.58, 13.33, 8.92, 7.92, 7.67, 12.33, 10.67, 7.33, 9.42, 8.67, 15.42, 12.92, 6, 11.58, 6.42, 6.17, 13.33, 11.75, 5.17, 6.92, 13.17, 8, 5.83) # https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0120463#pone-0120463-t001
+pd$sex <- c("M", "F", "M", "F", "M", "M", "M", "M", "M", "M", "F", "M", "F", "M", "F", "F", "M", "M", "F", "M", "F", "M", "F", "F", "M", "F", "M", "F", "M", "M", "M", "M", "M", "M", "F", "M", "F", "M", "F", "F", "M", "M", "F", "M", "F", "M", "F", "F")
+pd$disease <- "SGA"
+pd$tp <- gsub("none", 0, pd$`treatment:ch1`) %>% gsub("recom.*", 4, .) %>% as.numeric()
+GSE57107.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "patient:ch1", "tissue", "sex", "age", "disease", "tp", "treatment:ch1")]
+colnames(GSE57107.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Individual", "Tissue", "Sex", "Age", "Disease_Status", "Time_Point", "Treatment")
+
+# GSE75679
+Samp <- BLD3$GSE75679$GSE75679_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE75679"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$disease <- gsub("_P.*", "", pd$title) %>% paste0(., "_fatigue")
+GSE75679.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "gender:ch1", "age", "disease")]
+colnames(GSE75679.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Disease_Status")
+
+# GSE76503
+Samp <- BLD3$GSE76503$GSE76503_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE76503"
+pd$tissue <- "WB"
+#pd$age <- as.numeric(pd$`age (years):ch1`) #55–75
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$individual <- gsub(".* ", "", pd$title)
+GSE76503.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "individual", "sex", "condition:ch1", "intervention:ch1", "chip", "position")]
+colnames(GSE76503.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Individual", "Sex", "Time_Point", "Intervention", "Sentrix_ID", "Sentrix_Position")
+
+# GSE83944
+Samp <- BLD3$GSE83944$GSE83944_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE83944"
+pd$tissue <- "Neu"
+pd$age <- as.numeric(gsub(" y.*", "", pd$`age:ch1`))
+pd$sex <- pd$`Sex:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+GSE83944.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "continous_time_(ct):ch1", "sentrix_id:ch1", "sentrix_position:ch1")]
+colnames(GSE83944.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Time_Point", "Sentrix_ID", "Sentrix_Position")
+
+# GSE84624
+Samp <- BLD3$GSE84624$GSE84624_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE84624"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age (years):ch1`)
+pd$sex <- pd$`Sex:ch1` %>% gsub("0", "F", .)  %>% gsub("1", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE84624.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue:ch1", "sex", "age", "disease state:ch1", "chip", "position")]
+colnames(GSE84624.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Disease_Status", "Sentrix_ID", "Sentrix_Position")
+
+# GSE90117
+Samp <- BLD3$GSE90117$GSE90117_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE90117"
+pd$tissue <- "WB"
+#pd$age <- as.numeric(pd$`age (years):ch1`) # 6–11
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+GSE90117.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "bmi z-scores:ch1", "bmi z-score difference:ch1", "bodyfat (%):ch1", "leptin (pg/ml):ch1", "pesticide exposure:ch1", "pon1 192 genotype:ch1", "pon1 activity:ch1")]
+colnames(GSE90117.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "BMI_Zscore", "BMI_Zscore_Difference", "Bodyfat_Percentage", "Leptin_pg_ml", "Pesticide_Exposure", "PON1_Genotype", "PON1_Activity")
+
+# GSE99624
+Samp <- BLD3$GSE99624$GSE99624_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE99624"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE99624.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "donor id:ch1", "sex", "age", "disease state:ch1", "chip", "position")]
+colnames(GSE99624.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Individual", "Sex", "Age", "Disease_Status", "Sentrix_ID", "Sentrix_Position")
+
+# GSE77716
+Samp <- BLD4$GSE77716$GSE77716_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE77716"
+pd$tissue <- "WB"
+#pd$age <- as.numeric(pd$`age:ch1`) # 8 to 21
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+GSE77716.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "ethnicity:ch1", "gran_basophils:ch1", "gran_eosinophils:ch1", "gran_neutrophils:ch1", "lymphocytes:ch1", "monocytes:ch1")]
+colnames(GSE77716.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Ancestry", "Baso", "Eos", "Neu", "Lymphocytes", "Mono")
+
+# GSE100264 - same cohort as GSE107080
+Samp <- BLD4$GSE100264$GSE100264_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE100264"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`Sex:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$chip <- gsub("_.*", "", pd$title)
+pd$position <- gsub(".*_", "", pd$title) 
+pd$disease <- "HIV"
+GSE100264.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "race:ch1", "disease", "hcv_dx:ch1", "artadherence:ch1", "smoking:ch1", "idu:ch1", "chip", "position", "bcell:ch1", "cd4t:ch1", "cd8t:ch1", "gran:ch1", "mono:ch1", "nk:ch1")]
+colnames(GSE100264.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Ancestry", "Disease_Status", "Hepititis_C_Virus", "ART_Medication", "Smoking_Status", "Illicit_Drug_Use_Status", "Sentrix_ID", "Sentrix_Position", "Bcell", "CD4T", "CD8T", "Gran", "Mono", "NK")
+
+# GSE77696
+Samp <- BLD4$GSE77696$GSE77696_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE77696"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`agebl:ch1`)
+pd$sex <- pd$`dmgsex:ch1` %>% gsub("2", "F", .)  %>% gsub("1", "M", .)
+pd$disease <- gsub("1", "HIV", pd$`hiv:ch1`) %>% gsub("0", "Control", .)
+pd$chip <- gsub(".* ", "", pd$title) %>% gsub("_.*", "", .)
+pd$position <- gsub(".* ", "", pd$title) %>% gsub(".*_", "", .)
+GSE77696.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "racecomg:ch1", "disease", "chip", "position", "bcell:ch1", "cd4t:ch1", "cd8t:ch1", "mono:ch1", "nk:ch1", "gran:ch1", "wbc_new:ch1", "control_probe_pc1:ch1", "control_probe_pc2:ch1")]
+colnames(GSE77696.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Ancestry", "Disease_Status", "Sentrix_ID", "Sentrix_Position", "Bcell", "CD4T", "CD8T", "Mono", "NK", "Gran", "WBC", "Control_Probe_PC1", "Control_Probe_PC2")
+
+# GSE131989
+Samp <- BLD4$GSE131989$GSE131989_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE131989"
+pd$tissue <- gsub("CD19", "Bcell", pd$`sample_type:ch1`) %>% gsub("CD14", "Mono", .) %>% gsub("CD4", "CD4T", .)
+pd$age <- as.numeric(pd$`ageatblooddraw:ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$disease <- gsub("1", "Rheumatoid arthritis", pd$`subjecttype:ch1`) %>% gsub("2", "control", .)
+GSE131989.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "ethnicity:ch1", "disease", "smokerever:ch1", "chip", "position", "sample_plate:ch1", "sample_well:ch1", "run_date:ch1")]
+colnames(GSE131989.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Ancestry", "Disease_Status", "Smoking_History", "Sentrix_ID", "Sentrix_Position", "Plate", "Well", "Batch")
+
+# GSE114134
+Samp <- BLD4$GSE114134$GSE114134_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE114134"
+pd$tissue <- "CD4TNv"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`Sex:ch1` %>% gsub("female", "F", .)  %>% gsub("male", "M", .)
+pd$disease <- gsub("resolved", "allergy resolved", pd$`allergy status:ch1`)
+pd$ancestry <- gsub("1", "Caucasian", pd$`ancestry_strata:ch1`) %>% gsub("2", "non-Caucasian", .)
+GSE114134.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "disease", "allergy_phenotype:ch1", "stimulation:ch1")]
+colnames(GSE114134.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Disease_Status", "Allergy", "Antigen_Stimulation")
+# Transcriptomic data available at GSE114065
+
+
+# GSE120610
+Samp <- BLD4$GSE120610$GSE120610_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE120610"
+pd$tissue <- "Mono"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+GSE120610.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "ethnicity:ch1", "batch:ch1")]
+colnames(GSE120610.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Ancestry", "Batch")
+
+# GSE130491
+Samp <- BLD4$GSE130491$GSE130491_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE130491"
+pd$tissue <- "Mono"
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE130491.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "individual:ch1", "disease state:ch1", "smoking_status:ch1", "treatment:ch1", "time:ch1", "chip", "position")]
+colnames(GSE130491.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Individual", "Disease_Status",  "Treatment", "Time_Point", "Sentrix_ID", "Sentrix_Position")
+# Transcriptomic data available at GSE130478
+
+# GSE133062 - not blood, bronchoalveolar lavage cells
+
+# GSE130491
+Samp <- BLD4$GSE130491$GSE130491_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE130491"
+pd$tissue <- gsub("CD4.*", "CD4T", pd$`cell type:ch1`) %>% gsub("CD14.*", "Mono", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE130491.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "individual:ch1", "time:ch1", "disease state:ch1", "treatment:ch1", "chip", "position")]
+colnames(GSE130491.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Individual", "Time_Point", "Disease_Status", "Treatment", "Sentrix_ID", "Sentrix_Position")
+# Transcriptomic data available at GSE130478
+
+# GSE99755
+Samp <- BLD4$GSE99755$GSE99755_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE99755"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("female", "F", .)  %>% gsub("male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE99755.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "group:ch1", "chip", "position")]
+colnames(GSE99755.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Disease_Status", "Sentrix_ID", "Sentrix_Position")
+
+# GSE76171
+Samp <- BLD4$GSE76171$GSE76171_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE76171"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$individual <- gsub(".*participant ID ", "", pd$title)
+pd$disease <- "Type I diabetes"
+pd$intervention <- gsub("Case", "DCCT conventional therapy", pd$`sample group:ch1`) %>% gsub("Control", "DCCT intensive therapy", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE76171.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "gender:ch1", "age", "collection time:ch1", "individual", "disease", "intervention", "chip", "position")]
+colnames(GSE76171.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Time_Point", "Individual", "Disease_Status", "Intervention", "Sentrix_ID", "Sentrix_Position")
+
+# GSE83424
+Samp <- BLD4$GSE83424$GSE83424_series_matrix.txt.gz
+pd <- pData(Samp)
+GSE83424_appendix <- read_excel("Reference_additional_info/GSE83424_appendix.xls", skip = 1)
+pd <- left_join(pd, GSE83424_appendix, by = c("title" = "Patient"))
+pd$cohort <- "GSE83424"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`Age (years)`) # control doesn't have age
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$disease <- gsub("Case", "ASD", pd$`status:ch1`)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE83424.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "disease", "AGRE classification", "chip", "position")]
+colnames(GSE83424.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Disease_Status", "AGRE_Classification", "Sentrix_ID", "Sentrix_Position")
+
+# GSE68456
+Samp <- BLD4$GSE68456$GSE68456_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE68456"
+pd$tissue <- gsub("B cell", "Bcell", pd$`cell type:ch1`) %>% gsub("CD4.*", "CD4T", .) %>% 
+    gsub("CD8.*", "CD8T", .) %>% gsub("Gran.*", "Gran", .) %>% gsub("Mono.*", "Mono", .) %>%
+    gsub(".*nRBC", "nRBC", .) %>% gsub("T cell", "Tcell", .)
+pd$age <- 0
+pd$individual <- gsub(".*_", "", pd$title)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE68456.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "facs strategy:ch1", "platform_id", "tissue", "Sex:ch1", "age", "individual", "chip", "position")]
+colnames(GSE68456.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "FACS_Strategy", "Platform_ID", "Tissue", "Sex", "Age", "Individual", "Sentrix_ID", "Sentrix_Position")
+
+# GSE118940
+Samp <- BLD4$GSE118940$GSE118940_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE118940"
+pd$tissue <- "WB"
+#pd$age <- as.numeric(pd$`age (years):ch1`) #8 to 35 months
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+GSE118940.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "disease state:ch1")]
+colnames(GSE118940.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Disease_Status")
+
+# GSE131752
+Samp <- BLD4$GSE131752$GSE131752_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE131752"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+GSE131752.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "disease state:ch1")]
+colnames(GSE131752.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Disease_Status")
+
+# GSE81961
+Samp <- BLD4$GSE81961$GSE81961_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE81961"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age (yr):ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$treatment <- gsub("Yes", "aTNF medication", pd$`atnf usage at time of phlebotomy:ch1`) %>%
+    gsub("No", "control", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE81961.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "disease state:ch1", "treatment", "chip", "position")]
+colnames(GSE81961.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Disease_Status", "Treatment", "Sentrix_ID", "Sentrix_Position")
+
+# GSE113018
+Samp <- BLD4$GSE113018$GSE113018_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE113018"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE113018.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "disease state:ch1", "growth:ch1", "facial:ch1", "cns:ch1", "chip", "position", "source_name_ch1")]
+colnames(GSE113018.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Disease_Status", "Growth_Delay", "Facial_Abnormalities", "Impaired_CNS_Development", "Sentrix_ID", "Sentrix_Position", "Cohort_Subset")
+
+# GSE119532 - brain not blood
+
+# GSE113527 - cord blood derived mesenchymal stromal cells
+
+# GSE54596 - Human embryonic stem cells
+
+# GSE103397
+Samp <- BLD4$GSE103397$GSE103397_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE103397"
+pd$tissue <- "CD11b+"
+GSE103397.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "diagnosis:ch1")]
+colnames(GSE103397.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Disease_Status")
+
+# GSE75537 - oral tongue primary tumors
+
+# GSE131461
+Samp <- BLD4$GSE131461$GSE131461_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE131461"
+pd$age <- as.numeric(pd$`age:ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("2", "F", .)  %>% gsub("1", "M", .)
+pd$chip <- gsub("_.*", "", pd$description) 
+pd$position <- gsub(".*_", "", pd$description)
+pd$bfr <- gsub(".* ", "", pd$title)
+pd$individual <- gsub(":.*", "", pd$title) %>% gsub(".*_", "", .)
+GSE131461.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue:ch1", "sex", "age", "individual", "group:ch1", "bfr", "chip", "position")]
+colnames(GSE131461.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Individual", "Obesity_Status", "Bacteroidetes_to_Firmicutes_Ratio", "Sentrix_ID", "Sentrix_Position")
+
+# GSE123003
+Samp <- BLD4$GSE123003$GSE123003_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE123003"
+pd$tissue <- "CD8T"
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE123003.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "disease status:ch1", "chip", "position")]
+colnames(GSE123003.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Disease_Status", "Sentrix_ID", "Sentrix_Position")
+
+# GSE107211
+Samp <- BLD4$GSE107211$GSE107211_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE107211"
+pd$tissue <- "WB"
+pd$age <- 1.5/365 # 0-3 days old
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE107211.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "gender:ch1", "age", "group:ch1", "chip", "position")]
+colnames(GSE107211.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Disease_Status", "Sentrix_ID", "Sentrix_Position")
+
+# GSE119774
+Samp <- BLD4$GSE119774$GSE119774_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE119774"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age (years):ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE119774.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "disease state:ch1", "chip", "position")]
+colnames(GSE119774.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Disease_Status", "Sentrix_ID", "Sentrix_Position")
+
+
+
+
+
+
+str(pd)
+colnames(pd)
+
+grep("GSE", ls(), value = T) %>% paste0(collapse = ", ")
+
+save(GSE100227.m, GSE100264.m, GSE102468.m, GSE103397.m, GSE103541.m, GSE103657.m, GSE103929.m, GSE104287.m, GSE104451.m, GSE104778.m, GSE104812.m, GSE104942.m, GSE105018.m, GSE105123.m, GSE107080.m, GSE107205.m, GSE107211.m, GSE107351.m, GSE107459.m, GSE109914.m, GSE110043.m, GSE110128.m, GSE110554.m, GSE110555.m, GSE110607.m, GSE111629.m, GSE112596.m, GSE112611.m, GSE113018.m, GSE113725.m, GSE113967.m, GSE114134.m, GSE115278.m1, GSE115278.m2, GSE116339.m, GSE116380.m, GSE117861.m1, GSE117861.m2, GSE118144.m, GSE118940.m, GSE120228.m, GSE120610.m, GSE121633.m, GSE123003.m, GSE123914.m, GSE124366.m, GSE125105.m, GSE128064.m, GSE128235.m, GSE129841.m, GSE130491.m, GSE131433.m, GSE131461.m, GSE131752.m, GSE131989.m, GSE132203.m, GSE137634.m1, GSE137634.m2, GSE32148.m, GSE34639.m, GSE35069.m, GSE36054.m, GSE36064.m, GSE36369.m, GSE40279.m, GSE40576.m, GSE41169.m, GSE41273.m, GSE42861.m, GSE43414.m, GSE43975.m, GSE43976.m, GSE44798.m, GSE47880.m, GSE49031.m, GSE50660.m, GSE51032.m, GSE51388.m, GSE52588.m, GSE52635.m, GSE53045.m, GSE53740.m, GSE53816.m, GSE53840.m, GSE54399.m, GSE54882.m, GSE55763.m, GSE56046.m, GSE56105.m, GSE56553.m, GSE56581.m, GSE56600.m, GSE57107.m, GSE57204.m, GSE58888.m, GSE59065.m, GSE59250.m, GSE59550.m, GSE59592.m, GSE59685.m, GSE59999.m, GSE60132.m, GSE61151.m, GSE61496.m, GSE61653.m, GSE62003.m, GSE62219.m, GSE62298.m, GSE62992.m, GSE63499.m, GSE64244.m, GSE64380.m, GSE64495.m, GSE67170.m, GSE67393.m, GSE67444.m, GSE67530.m, GSE67705.m, GSE67751.m, GSE68194.m, GSE68379.m, GSE69138.m, GSE69176.m, GSE69270.m, GSE69633.m, GSE71955.m, GSE72680.m, GSE72773.m, GSE72774.m, GSE72775.m, GSE72776.m, GSE73103.m, GSE73115.m, GSE73412.m, GSE74414.m, GSE74432.m, GSE75679.m, GSE76285.m, GSE76399.m, GSE76503.m, GSE77445.m, GSE77696.m, GSE77716.m, GSE78904.m, GSE78956.m, GSE79144.m, GSE79237.m, GSE79257.m, GSE80283.m, GSE80417.m, GSE80468.m, GSE80553.m, GSE81961.m, GSE82218.m, GSE82273.m, GSE83944.m, GSE84727.m, GSE85042.m, GSE87095.m, GSE87571.m, GSE87640.m, GSE87648.m, GSE88824.m, GSE88929.m, GSE89093.m, GSE89218.m, GSE89251.m, GSE89278.m, GSE89353.m, GSE90117.m, GSE93266.m, GSE93933.m, GSE97362.m, GSE97628.m, GSE98056.m, GSE99624.m, GSE99755.m, file = "RData/602-GEO_blood_meta.RData")
+
+load("RData/602-GEO_blood_meta.RData")
+
+# GSE97362
+Samp <- BLD4$GSE97362$GSE97362_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$cohort <- "GSE97362"
+pd$tissue <- "WB"
+pd$age <- as.numeric(pd$`age (years):ch1`)
+pd$sex <- pd$`gender:ch1` %>% gsub("Female", "F", .)  %>% gsub("Male", "M", .)
+pd$chip <- gsub(".*GSM[0-9]{7}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+pd$position <- gsub(".*[0-9]{10}_", "", pd$supplementary_file) %>% gsub("_.*", "", .)
+GSE97362.m <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "tissue", "sex", "age", "disease state:ch1", "chip", "position")]
+colnames(GSE97362.m) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Disease_Status", "Sentrix_ID", "Sentrix_Position")
+
+
+
+```
+
+```{r}
+library(plyr)
+
+allpd <- rbind.fill(GSE100227.m, GSE100264.m, GSE102468.m, GSE103397.m, GSE103541.m, GSE103657.m, GSE103929.m, GSE104287.m, GSE104451.m, GSE104778.m, GSE104812.m, GSE104942.m, GSE105018.m, GSE105123.m, GSE107080.m, GSE107205.m, GSE107211.m, GSE107351.m, GSE107459.m, GSE109914.m, GSE110043.m, GSE110128.m, GSE110554.m, GSE110555.m, GSE110607.m, GSE111629.m, GSE112596.m, GSE112611.m, GSE113018.m, GSE113725.m, GSE113967.m, GSE115278.m1, GSE115278.m2, GSE116339.m, GSE116380.m, GSE117861.m1, GSE117861.m2, GSE118144.m, GSE118940.m, GSE120228.m, GSE120610.m, GSE121633.m, GSE123003.m, GSE123914.m, GSE124366.m, GSE125105.m, GSE128064.m, GSE128235.m, GSE129841.m, GSE130491.m, GSE131433.m, GSE131461.m, GSE131752.m, GSE131989.m, GSE132203.m, GSE137634.m1, GSE137634.m2, GSE32148.m, GSE34639.m, GSE35069.m, GSE36054.m, GSE36064.m, GSE36369.m, GSE40279.m, GSE40576.m, GSE41169.m, GSE41273.m, GSE42861.m, GSE43414.m, GSE43975.m, GSE43976.m, GSE44798.m, GSE47880.m, GSE49031.m, GSE50660.m, GSE51032.m, GSE51388.m, GSE52588.m, GSE52635.m, GSE53045.m, GSE53740.m, GSE53816.m, GSE53840.m, GSE54399.m, GSE54882.m, GSE55763.m, GSE56046.m, GSE56105.m, GSE56553.m, GSE56581.m, GSE56600.m, GSE57107.m, GSE57204.m, GSE58888.m, GSE59065.m, GSE59250.m, GSE59550.m, GSE59592.m, GSE59685.m, GSE59999.m, GSE60132.m, GSE61151.m, GSE61496.m, GSE61653.m, GSE62003.m, GSE62219.m, GSE62298.m, GSE62992.m, GSE63499.m, GSE64244.m, GSE64380.m, GSE64495.m, GSE67170.m, GSE67393.m, GSE67444.m, GSE67530.m, GSE67705.m, GSE67751.m, GSE68194.m, GSE68379.m, GSE69138.m, GSE69176.m, GSE69270.m, GSE69633.m, GSE71955.m, GSE72680.m, GSE72773.m, GSE72774.m, GSE72775.m, GSE72776.m, GSE73103.m, GSE73115.m, GSE73412.m, GSE74414.m, GSE74432.m, GSE75679.m, GSE76285.m, GSE76399.m, GSE76503.m, GSE77445.m, GSE77696.m, GSE77716.m, GSE78904.m, GSE78956.m, GSE79144.m, GSE79237.m, GSE79257.m, GSE80283.m, GSE80417.m, GSE80468.m, GSE80553.m, GSE81961.m, GSE82218.m, GSE82273.m, GSE83944.m, GSE84727.m, GSE85042.m, GSE87095.m, GSE87571.m, GSE87640.m, GSE87648.m, GSE88824.m, GSE88929.m, GSE89093.m, GSE89218.m, GSE89251.m, GSE89278.m, GSE89353.m, GSE90117.m, GSE93266.m, GSE93933.m, GSE97362.m, GSE97628.m, GSE98056.m, GSE99624.m, GSE99755.m, GSE114134.m)
+```
+
+```{r}
+library(ggridges)
+library(ggplot2)
+library(gridExtra)
+
+theme_set(theme_ridges())
+
+allpd$Age <- as.numeric(allpd$Age)
+allpd$Sex <- as.character(allpd$Sex) %>% gsub("[Ff]emale", "F", .) %>% gsub("[Mm]ale", "M", .)
+
+#Take out weird cohort with age = 891
+plt <- allpd[which(allpd$Cohort != "GSE80417"), ]
+plt$Tissue <- gsub("CD14.*", "Mono", plt$Tissue)
+plt <- plt[plt$Tissue %in% c("WB", "PBMC", "Buffy", "CB", "Bcell", "CD4T", "CD8T", "Mono", "NK", "Neu", "Gran"), ]
+
+# Color by Tissue
+p1 <- ggplot(plt) + 
+    geom_density(aes(x = Age, y = ..count.., fill = Tissue, colour = Tissue), alpha = 0.25) + 
+    theme_classic() + 
+    theme(legend.position="none")
+p2 <- ggplot(plt, aes(x = Age, y = Cohort)) + 
+    geom_density_ridges(aes(fill = Tissue, colour = Tissue), alpha = 0.25) + 
+    theme_classic() 
+grid.arrange(p1, p2, ncol = 1, heights = c(1,4)) 
+col <- c('#8dd3c7','#ffffb3','#bebada','#fb8072','#80b1d3','#fdb462','#b3de69','#fccde5','#d9d9d9','#bc80bd')
+ggplot(plt) + 
+    geom_histogram(aes(x = Age, fill = Tissue), color = "darkgray", alpha = 0.75, binwidth = 2) + 
+    theme_classic() + 
+    xlim(0, max(plt$Age)) + 
+    scale_color_brewer(palette = "Set3") + 
+    scale_fill_brewer(palette = "Set3") +
+    scale_x_continuous(breaks = seq(0, 100, by = 10)) + 
+    scale_y_continuous(breaks = seq(0, 1000, by = 100))
+    #scale_fill_manual(values = col)
+
+# Color by Sex
+plt <- plt[plt$Tissue %in% c("WB", "PBMC", "Buffy"), ]
+p1 <- ggplot(plt) + 
+    geom_density(aes(x = Age, y = ..count.., fill = Sex, colour = Sex), alpha = 0.25) + 
+    theme_classic() + 
+    theme(legend.position="none")
+p2 <- ggplot(plt, aes(x = Age, y = Cohort)) + 
+    geom_density_ridges(aes(fill = Sex, colour = Sex), alpha = 0.25) + 
+    theme_classic() 
+grid.arrange(p1, p2, ncol = 1, heights = c(1,4)) 
+ggplot(plt) + 
+    geom_histogram(aes(x = Age, fill = Sex), color = "darkgray", alpha = 0.75, binwidth = 2) + 
+    theme_classic() + 
+    xlim(0, max(plt$Age)) + 
+    scale_color_brewer(palette = "Set3") + 
+    scale_fill_brewer(palette = "Set3") +
+    scale_x_continuous(breaks = seq(0, 100, by = 10)) + 
+    scale_y_continuous(breaks = seq(0, 1000, by = 100))
+    #scale_fill_manual(values = col)
+
+ggplot(plt) + 
+    geom_histogram(aes(x = Age, fill = Disease_Status), color = "darkgray", alpha = 0.75, binwidth = 2) + 
+    theme_classic() + 
+    xlim(0, max(plt$Age)) + 
+    scale_x_continuous(breaks = seq(0, 100, by = 10)) + 
+    scale_y_continuous(breaks = seq(0, 1000, by = 100))
+
+# Color by Disease Status
+p1 <- ggplot(plt) + 
+    geom_density(aes(x = Age, y = ..count.., fill = Disease_Status, colour = Disease_Status), alpha = 0.25) + 
+    theme_classic() + 
+    theme(legend.position="none")
+p2 <- ggplot(plt, aes(x = Age, y = Cohort)) + 
+    geom_density_ridges(aes(fill = Sex, colour = Disease_Status), alpha = 0.25) + 
+    theme_classic() 
+grid.arrange(p1, p2, ncol = 1, heights = c(1,4)) 
+
+
+ggplot(plt, aes(x = Age, y = ..count.., color = Sex, fill = Sex)) + geom_density(alpha = 0.2)  
+#qplot(plt$Age, fill = plt$Sex, alpha = 0.2)
+ggplot(plt, aes(x = Age, y = ..count.., color = Tissue, fill = Tissue)) + geom_density(alpha = 0.2) 
+#qplot(plt$Age, fill = plt$Tissue, alpha = 0.2)
+
+ggplot(plt[plt$Age<19, ], aes(x = Age, y = ..count.., color = Sex, fill = Sex)) + geom_density(alpha = 0.2)  
+
+ggplot(plt[plt$Age<19, ], aes(x = Age, y = ..count.., color = Tissue, fill = Tissue)) + geom_density(alpha = 0.2)
+```
+
+```{r}
+cord <- allpd[allpd$Tissue == "CB", ]
+
+```
+

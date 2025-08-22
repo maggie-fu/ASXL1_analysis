@@ -1,0 +1,232 @@
+---
+title: "03-TurveyBiggs_TargetedAnalysis"
+author: "Maggie"
+date: "10/3/2019"
+output: html_document
+---
+
+## SRP72
+
+```{r setup, include=FALSE}
+# Work directory
+setwd("~/maggie.fu/Projects/Biggs")
+
+# CRAN packages
+library(plyr)
+library(dplyr)
+library(ggplot2) 
+library(reshape2)
+library(RColorBrewer)
+library(gridExtra)
+library(locfdr)
+library(sva)
+library(EpiDISH)
+library(devtools)
+library(MASS) 
+library(compositions)
+
+# Bioconductor packages
+library(methylumi)
+library(lumi)
+library(wateRmelon)
+library(impute)
+library(Metrics)
+library(GEOquery)
+
+# In-house scripts
+source("~/maggie.fu/Functions/PreprocessScripts.R")
+```
+
+## Targeted Analyses
+
+### Plot SRP72 & ARL9
+When annotating the top blood DMR, I noticed that ARL9 has been implicated in Bone Barrow Failure Syndrome 1 (BMFS1). While the ClinVar annotation has only one star, it turns out that ARL9's neighboring gene is SRP72, whose mutation drives BMFS1. The finding is pretty cool. This part aim 
+
+```{r}
+load("RData/09-rep_removed_FINAL.RData")
+load("RData/100-global_IQR_test_wb.RData")
+load("~/maggie.fu/Reference/EPIC_fdat_Mreg.RData")
+
+fdat <- merge(betas.wb.test, fdat_EPIC_Mreg[, c("CHR", "MAPINFO", "Mreg", "UCSC_REFGENE_NAME", "UCSC_REFGENE_GROUP", "GENCODECOMPV12_NAME", "GENCODEBASICV12_GROUP")], by = 0)
+rownames(fdat) <- fdat$Row.names
+mcolor <- c("#fc8d62", "light gray")
+malpha <- c(1, 0.2)
+
+genefdat1 <- fdat[fdat$CHR == 4 & fdat$MAPINFO >= 57330000 & fdat$MAPINFO <= 57340000, ]
+genefdat2 <- fdat[fdat$CHR == 4 & fdat$MAPINFO >= 57340000 & fdat$MAPINFO <= 57380000, ]
+genefdat3 <- fdat[fdat$CHR == 4 & fdat$MAPINFO >= 57380000 & fdat$MAPINFO <= 57396000, ]
+
+plotGeneRegion(betas(PedRef.wb.cr), pData(PedRef.wb.cr)$Disease_Status, genefdat1, 0, "SRP72", mcolor, malpha, HL = F) + 
+    geom_vline(xintercept = 57333400, color = "#BED8DB") + 
+    geom_vline(xintercept = 57333800, color = "#BED8DB")
+
+plotGeneRegion(betas(PedRef.wb.cr), pData(PedRef.wb.cr)$Disease_Status, genefdat2, 0, "SRP72 & ARL9", mcolor, malpha, HL = F) +
+    geom_vline(xintercept = 57371000, color = "#BED8DB") + 
+    geom_vline(xintercept = 57371400, color = "#BED8DB") +
+    geom_vline(xintercept = 57371700, color = "#BED8DB") 
+
+plotGeneRegion(betas(PedRef.wb.cr), pData(PedRef.wb.cr)$Disease_Status, genefdat3, 0, "SRP72 & ARL9", mcolor, malpha, HL = F)
+
+
+load("RData/10-Biggs_patient_raw.RData")
+fdat <- fdat_EPIC_Mreg[, c("CHR", "MAPINFO", "Mreg", "UCSC_REFGENE_NAME", "UCSC_REFGENE_GROUP", "GENCODECOMPV12_NAME", "GENCODEBASICV12_GROUP")]
+genefdat4 <- fdat[fdat$CHR == 4 & fdat$MAPINFO >= 57330000 & fdat$MAPINFO <= 57340000, ]
+genefdat5 <- fdat[fdat$CHR == 4 & fdat$MAPINFO >= 57340000 & fdat$MAPINFO <= 57380000, ]
+plotGeneRegion(betas(TB), pData(TB)$Disease_Status, genefdat1, 0, "SRP72", mcolor, malpha, HL = F) + 
+    geom_vline(xintercept = 57333400, color = "#BED8DB") + 
+    geom_vline(xintercept = 57333800, color = "#BED8DB")
+plotGeneRegion(betas(TB), pData(PedRef.wb.cr)$Disease_Status, genefdat2, 0, "SRP72 & ARL9", mcolor, malpha, HL = F) +
+    geom_vline(xintercept = 57371000, color = "#BED8DB") + 
+    geom_vline(xintercept = 57371400, color = "#BED8DB") +
+    geom_vline(xintercept = 57371700, color = "#BED8DB") 
+```
+
+## Explore SRP72 methylation in EPIC only
+Because some sites were lost when combined with 450k, we will perform predic
+
+### Get GSE112611 because it's a big EPIC cohort
+
+```{r}
+# Get GSE112611 (already downloaded)
+load("RData/01-blood_GEO.RData")
+Samp <- BLD$GSE112611$GSE112611_series_matrix.txt.gz # Crohn's disease
+pd <- pData(Samp)
+pd$age <- as.numeric(pd$`age:ch1`)
+GSE112611 <- Samp[, sampleNames(Samp) %in% rownames(pd)] 
+GSE112611_beta <- read.delim("GEO/GSE112611/GSE112611_beta_values.txt")
+rownames(GSE112611_beta) <- GSE112611_beta[, 1]
+GSE112611_pval <- GSE112611_beta[, grep("PVal", colnames(GSE112611_beta))]
+GSE112611_beta <- GSE112611_beta[, -c(1, grep("PVal", colnames(GSE112611_beta)))]
+colnames(GSE112611_beta) <- gsub("X", "", colnames(GSE112611_beta))
+GSE112611_beta <- GSE112611_beta[, colnames(GSE112611_beta) %in% pd$description] 
+identical(colnames(GSE112611_beta), as.character(pd$description))
+colnames(GSE112611_beta) <- pd$title
+colnames(GSE112611_pval) <- colnames(GSE112611_beta)
+dim(GSE112611_beta) 
+GSE112611_meta <- pd
+#save(GSE112611_beta, GSE112611_meta, GSE112611_pval, file = "Ped_ref_GSE112611.RData")
+
+load("GSE112611.RData")
+GSE112611_meta$cohort <- rep("GSE112611", nrow(GSE112611_meta))
+GSE112611_meta$sentrix_id <- gsub("_.*", "", GSE112611_meta$description)
+GSE112611_meta$sentrix_position <- gsub(".*_", "", GSE112611_meta$description)
+GSE112611_meta$`gender:ch1` <- GSE112611_meta$`gender:ch1` %>% gsub("Female", "F", .) %>% gsub("Male", "M", .)
+GSE112611_meta$source_name_ch1 <- gsub("Peripheral Blood", "WB", GSE112611_meta$source_name_ch1)
+GSE112611_meta$Disease_Status <- GSE112611_meta$`diagnosis:ch1` %>% gsub("non-IBD control", "Healthy", .)
+GSE112611_meta$`disease stage at diagnosis:ch1` <- GSE112611_meta$`disease stage at diagnosis:ch1` %>% gsub("non-IBD control", "Healthy", .)
+GSE112611.meta <- GSE112611_meta[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "sentrix_id", "sentrix_position", "source_name_ch1", "gender:ch1", "age", "baseline vs follow-up:ch1", "Disease_Status", "disease stage at diagnosis:ch1", "disease stage at at follow up:ch1")]
+colnames(GSE112611.meta) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Sentrix_ID", "Sentrix_Position", "Tissue", "Sex", "Age", "Visit", "Disease_Status", "Disease_Stage_Diagnosis", "Disease_Stage_Followup")
+```
+
+```{r}
+# Combine 
+load("RData/10-Biggs_patient_raw.RData")
+TB.meta <- pData(TB)
+TB.meta$Tissue <- gsub("Buccal", "BEC", TB.meta$Tissue) %>% gsub("Saliva", "SAL", .)
+TB.meta$cohort <- rep("ASXL1", nrow(TB.meta))
+TB.meta$disease_status <- gsub("Pat", "ASXL1", TB.meta$Individual) %>% gsub("Ctrl", "Control", .)
+TB.meta$data_processing <- rep("background substracted and color corrected", nrow(TB.meta))
+TB.meta$platform_id <- rep("GPL13534", nrow(TB.meta))
+TB.meta <- TB.meta[, c("cohort", "Sample_Name", "data_processing", "platform_id", "Sentrix_ID", "Sentrix_Position", "Tissue", "Sex", "Age", "Individual", "Ethnicity", "disease_status")]
+colnames(TB.meta) <- c("Cohort", "Sample_ID", "Data_Processing", "Platform_ID", "Sentrix_ID", "Sentrix_Position", "Tissue", "Sex", "Age", "Individual", "Ethnicity", "Disease_Status")
+
+allpd <- rbind.fill(GSE112611.meta, TB.meta)
+allpd$Disease_Stage_Diagnosis <- allpd$Disease_Stage_Diagnosis %>% gsub("NA", NA, .)
+allpd$Disease_Stage_Followup <- allpd$Disease_Stage_Followup %>% gsub("NA", NA, .)
+rownames(allpd) <- allpd$Sample_ID
+CpG <- Reduce(intersect, list(rownames(GSE112611_beta), 
+                              rownames(betas(TB))))
+allbt <- cbind(GSE112611_beta[CpG, ], betas(TB)[CpG, ])
+allp <- cbind(GSE112611_pval[CpG, ], pvals(TB)[CpG, ])
+
+identical(rownames(allpd), colnames(allbt))
+PedRefEPIC <- new("MethyLumiSet", 
+              betas = as.matrix(allbt), 
+              pvals = as.matrix(allp),
+              phenoData = as(allpd, "AnnotatedDataFrame"), 
+              featureData = TB@featureData[rownames(allbt)], 
+              sampleNames = colnames(allbt), 
+              experimentData = TB@experimentData, 
+              .__classVersion__ = TB@.__classVersion__)
+
+save(PedRefEPIC, file = "RData/201-Ped_blood_ref_epic.RData")
+```
+
+### Re-preprocess these two cohorts!!!
+
+```{r}
+load("RData/201-Ped_blood_ref_epic.RData")
+
+MLset <- PedRefEPIC
+DTname <- "PedRefEPIC"
+
+
+# Sex prediction
+if (is.null(fData(MLset)$CHR)) {
+    if (dim(MLset)[[1]] > 600000) {
+        load("~/maggie.fu/Reference/EPIC_fdat.RData")
+        fdat <- merge(fData(MLset), fData_EPIC, by = 0, sort = F)
+    } else if (dim(MLset)[[1]] > 300000) {
+        load("~/maggie.fu/Reference/HM450_fdat.RData")
+        fdat <- merge(fData(MLset), fData_450, by = 0, sort = F)
+    }
+    rownames(fdat) <- fdat$Row.names
+    fData(MLset) <- fdat[rownames(MLset), -1]
+}
+prediction <- SexPred(MLset, th = 0.73) # extremely low threshold, shifted distribetion
+pData(MLset)$estimatedSex <- prediction$estimatedSex
+mismatch <- pData(MLset)[pData(MLset)$estimatedSex != pData(MLset)$Sex, c("Sex", "estimatedSex")]
+mismatch <- cbind(mismatch, prediction$score[sampleNames(MLset)[pData(MLset)$estimatedSex != pData(MLset)$Sex]])
+
+p1 <- BetaPlot(MLset[fData(MLset)$CHR %in% c("X","Y"), ], "Sex") # actual sex looks better
+p2 <- BetaPlot(MLset[fData(MLset)$CHR %in% c("X","Y"), ], "estimatedSex")
+grid.arrange(p1, p2, ncol = 2)
+#BetaPlot(MLset[fData(MLset)$CHR %in% c("X","Y"), !sampleNames(MLset) %in% c("EMVB153F", "control-52")], "Sex")
+
+# Age prediction 
+bt_horvath <- AgePredDat(MLset, Version = "Old", DTname = DTname)
+meta <- pData(MLset)
+meta$Female <- meta$Sex %>% 
+                gsub("M", "0", .) %>%
+                gsub("F", "1", .) # horvath anno needs age, female, and tissue type
+anno_horvath <- data.frame("SampleID" = colnames(bt_horvath)[-1], "Age" = meta$Age, "Female" = meta$Female, "Tissue" = meta$Tissue)
+write.table(anno_horvath, paste0("DNAmClock/", DTname, "_anno_horvath.csv"), row.names = F, sep = ",")
+out_horvath <- read.csv(paste0("DNAmClock/", DTname, "_betas_horvath.output.csv"), stringsAsFactors = F) # Import Horvath calculator result
+
+ggplot(out_horvath, aes(Age, DNAmAge, color = Tissue, shape = predictedGender)) + geom_point() + geom_abline() + theme_bw() # outliers are screwing up the plots (EMVB153F and control-119)
+pData(MLset)$DNAmAge <- out_horvath$DNAmAge
+
+# Sample exploratory analysis
+meta <- pData(MLset)
+BetaPlot(MLset, "Cohort") 
+BetaPlot(MLset, "Tissue")
+
+# Sample QC
+out1 <- DetPBisCTest(MLset, bctest = F)
+out2 <- detectOutlier(as.matrix(betas(MLset))) %>% which(.) # This calculates potential outliers
+out3 <- outlyx(MLset) 
+out3 <- rownames(out3)[out3$outliers == T]
+out4 <- locfdr_LMM(betas(MLset), pData(MLset))
+save(out1, out2, out3, out4, file = "RData/202-EPIC_outliers.RData")
+load("RData/202-EPIC_outliers.RData")
+c(list(DetPOutlier = out1), list(ClustOutlier = out2), list(IQRnPCOutlier = out3), list(LocfdrOutlier = out4))
+out <- table(c(names(out4), out3, names(out2), names(out1))) %>% .[.>2] %>% names() # remove samples that are identified as outliers in all methods (except for brain)
+BetaPlot(MLset[, sampleNames(MLset) %in% out], "Sample_ID") # examine what they look like
+MLset <- MLset[, !sampleNames(MLset) %in% c("03-004_At Dx", "05-081_36M", "05-105_36M", "14-010_At Dx")]
+#MLset <- MLset[, !sampleNames(MLset) %in% c("control-52", "control-119")]
+
+# Probe filtering
+MLset.P <- ProbeFilter(MLset, Platform = "EPIC", pFilter = T, SexProbeFilter = T)
+flist <- MLset.P[[2]]
+MLset.P <- MLset.P[[1]]
+
+meta <- pData(MLset.P)
+
+# Remake the age~ dnamage plot
+ggplot(meta, aes(Age, DNAmAge, color = Tissue, shape = Sex)) + geom_point() + geom_abline() + theme_bw()
+ggplot(meta[meta$Disease_Status %in% c("Healthy", "ASXL1", "Control") & meta$Tissue %in% c("WB", "PBMC", "BEC"), ], aes(Age, DNAmAge, color = Tissue, shape = Disease_Status)) + geom_point(size = 2) + scale_shape_manual(values = c(18, 15, 1)) + geom_abline() + theme_bw()
+SamplePlots(MLset.P[, meta$Tissue %in% c("WB", "PBMC", "BEC")], hmvars = meta[, c("Age", "Cohort", "Platform_ID", "Tissue", "Disease_Status")], hmcor = T, mds = F, hclust = F, SNP = F, hmname = F)
+
+save(MLset.P, file = "RData/04-outliers_removed_probe_filtered.RData")
+```
+

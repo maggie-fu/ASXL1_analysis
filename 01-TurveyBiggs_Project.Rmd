@@ -1,0 +1,1897 @@
+---
+title: "Turvey-Biggs Project"
+author: "Maggie Fu"
+date: "`r Sys.Date()`"
+css: "custom.css"
+output:
+    rmdformats::readthedown:
+        highlight: kate
+        lightbox: true
+        fig_width: 8
+        fig_height: 4
+---
+
+
+This Report summarises the pipeline and approach used to perform the data QC and analysis on the KIRV patient samples (Drs. Steward Turvey & Catherine Biggs) that were processed for DNA methylation in the Kobor Lab.
+
+
+&nbsp;
+
+
+# **Study design**
+
+## A. Background
+The study involves a patient enrolled in the BC Children's Hospital for abcess growth with _____ virus on the leg. Whole exon sequencing of the patient demostrate compound heterozygous mutations in *ASXL1* gene. ASXL1 mutations has been found in various malignant myeloid diseases, and are generally associated with poor prognosis [1]. ASXL1 is involved in multiple transcriptional regulatory pathways, notably transcriptional repression mediated by polycomb repressive complex 1 (PRC1) and 2 (PRC2) [2, 3].
+
+PRC1-mediated repression involves ubiquination of histone H2A at lysine 119. ASXL1-3 binds with BAP1 to form Polycomb Repressive DeUBiquitinase (PR-DUB) complex, which deubiquinates H2AK119 [2]. In the absence of ASXL1, PR-DUB loses deubiquinase activity, leading to global increase in H2AK119ub in vivo [4]. In parallel, ASXL1 plays a role in PRC2-mediated trimethylation of H3K27 [3]. ASXL1 knock down leads to global loss of H3K27me3 and de-repression of HOX genes expression [3]. Disruption of ASXL1 expression has been shown to affect epigenome-wide chromosomal modification and expression changes [3, 4]. Additionally, ASXL1 mutation in myeloproliferative neoplasms (MPN) patients demonstrate differential DNA methylation patterns at various oncogenes and tumor suppressor genes in population studies [5, 6]. 
+
+Yet, it is unclear what the role of ASXL1 mutation is on her epigenetic and how it affects her condition. Therefore, we are using EPIC chips to characterize the patient's DNA methylome. The patient's methylome is mapped on to an age and tissue-matched reference to identify gene regions that demonstrate significant deviation from the average methylome of a healthy population. 
+
+## B. Cohort Characteristics
+WB, PBMC, buccal and saliva samples were all collected from the patient (11). Additionally, the patient has an older sister (14) who does not demonstrate the same symptom as far as we are aware of. The sister's saliva and buccal samples are also collected to control for genetic variation. Additional testing is required to varify the sister's genotype for ASXL1. 
+
+For reference building, I examined public and in-house dataset for buccal and blood samples of the target age range (10-12). The search yielded 360 peripheral whole blood (WB) samples, 50 peripheral blood mononuclear cell (PBMC) samples, and 320 buccal epithelial cell (BEC) samples. The reference cohorts' genetic ancestry is mostly unknown. The sex distribution is even. 
+
+## C. Sample Processing Summaries
+The Kobor lab extracted gDNA from patients samples, and the DNA samples were processed for DNA methylation analysis using the Ilumina Methylation BeadChips. All samples yielded measurable quantity of high-purity gDNA for bisulfite conversion. In total, 1 array run were performed. There were also 1 technical replicates of the PBMC sample included.
+
+Following raw data import into the GenomeStudio software (Illumina), DNAm signals were color-corrected and background subtracted, and the resulting data were carried forward to the Kobor lab epigenetic QC pipeline for an extensive quality control check and age calculation processing as described below.
+
+&nbsp;
+&nbsp;
+
+
+# Setup
+
+# Patient Sample
+
+## Read in patient and sister data
+
+### Packages and functions
+```{r}
+# Work directory
+setwd("~/bcchruser/Projects/Turvey/ASXL1/")
+
+# CRAN packages
+library(plyr)
+library(dplyr)
+library(ggplot2) 
+library(reshape2)
+library(RColorBrewer)
+library(gridExtra)
+library(locfdr)
+library(sva)
+library(EpiDISH)
+library(devtools)
+library(MASS) 
+library(compositions)
+
+# Bioconductor packages
+library(methylumi)
+library(lumi)
+library(wateRmelon)
+library(impute)
+library(Metrics)
+library(GEOquery)
+
+# In-house scripts
+source("~/maggie.fu/Functions/PreprocessScripts.R")
+```
+
+### Generate methylumi object
+```{r}
+TB <- methylumiR("raw/Turvey-alldata.txt", 
+                  "raw/Turvey-qcfile.txt")
+pd1 <- read.csv("raw/Turvey_Samplesheet.csv", stringsAsFactors = F, skip = 7)
+pd1 <- pd1[pd1$Project == "Turvey", ]
+TB <- TB[, sampleNames(TB) %in% pd1$Sample_Name]
+pd0 <- pData(TB)
+
+pd1$Sample_ID <- pd1$Sample_Name
+pd1$Individual <- gsub("_.*", "", pd1$Sample_Name)
+pd1$Sex <- rep("F", nrow(pd1))
+pd1$Ethnicity <- rep("Taiwanese_Canadian", nrow(pd1))
+pd1$Tissue <- pd1$Sample_Name %>% gsub("Pat_|Ctrl_|_[12].*", "", .)
+pd1$Age <- rep(11, nrow(pd1))
+pd1[pd1$Individual == "Ctrl", "Age"] <- 14
+pd1$Female <- pd1$Sex %>% 
+                gsub("M", "0", .) %>%
+                gsub("F", "1", .) # horvath anno needs age, female, and tissue type
+pd1$Sentrix_ID <- as.character(pd1$Sentrix_ID)
+pd1$Sentrix_Position <- as.character(pd1$Sentrix_Position)
+pd1$Sentrix_row <- sapply(1:nrow(pd1), function(x) {
+    strsplit(as.character(pd1$Sentrix_Position[x]), split = "C")[[1]][1]
+})
+levels(pd1$Sentrix_row) <- c(1, 2, 3, 4, 5, 6, 7, 8)
+pd1 <- pd1[match(pd0$sampleID, pd1$Sample_ID), ]
+pData(TB) <- pd1
+sampleNames(TB) <- pData(TB)$Sample_ID
+
+save(TB, file = "RData/10-Biggs_patient_raw.RData")
+```
+
+```{r}
+load("RData/10-Biggs_patient_raw.RData")
+MLset <- TB
+DTname <- "TB"
+
+TB.bl <- TB[, grep("PBMC", sampleNames(TB))]
+TB.bc <- TB[, grep("Buccal", sampleNames(TB))]
+
+# Age prediction 
+#bt_horvath <- AgePredDat(MLset, Version = "Old", DTname = DTname)
+bt_horvath_bl <- AgePredDat(TB.bl, Version = "Old", DTname = DTname)
+bt_horvath_bc <- AgePredDat(TB.bc, Version = "Old", DTname = DTname)
+#anno_horvath <- data.frame("SampleID" = colnames(bt_horvath)[-1], "Age" = pData(MLset)$Age, "Female" = pData(MLset)$Female, "Tissue" = pData(MLset)$Tissue)
+anno_horvath_bl <- data.frame("SampleID" = colnames(bt_horvath_bl)[-1], "Age" = pData(TB.bl)$Age, "Female" = pData(TB.bl)$Female, "Tissue" = pData(TB.bl)$Tissue)
+anno_horvath_bc <- data.frame("SampleID" = colnames(bt_horvath_bc)[-1], "Age" = pData(TB.bc)$Age, "Female" = pData(TB.bc)$Female, "Tissue" = pData(TB.bc)$Tissue)
+#write.table(anno_horvath, paste0(DTname, "_anno_horvath.csv"), row.names = F, sep = ",")
+write.table(anno_horvath_bl, paste0(DTname, "_anno_bl_horvath.csv"), row.names = F, sep = ",")
+write.table(anno_horvath_bc, paste0(DTname, "_anno_bc_horvath.csv"), row.names = F, sep = ",")
+out_horvath.n <- read.csv(paste0("DNAmClock/", DTname, "_betas_horvath.output.csv"), stringsAsFactors = F) 
+out_horvath.o <- read.csv(paste0("DNAmClock/", DTname, "_betas_horvath_old.output.csv"), stringsAsFactors = F) 
+# Import Horvath calculator result
+
+# Sex prediction
+if (is.null(fData(MLset)$CHR)) {
+    if (dim(MLset)[[1]] > 600000) {
+        load("~/maggie.fu/Reference/EPIC_fdat.RData")
+        fdat <- merge(fData(MLset), fData_EPIC, by = 0, sort = F)
+    } else if (dim(MLset)[[1]] > 300000) {
+        load("~/maggie.fu/Reference/HM450_fdat.RData")
+        fdat <- merge(fData(MLset), fData_450, by = 0, sort = F)
+    }
+    rownames(fdat) <- fdat$Row.names
+    fData(MLset) <- fdat[rownames(MLset), -1]
+}
+(prediction <- SexPred(MLset)) 
+pData(MLset)$estimatedSex <- prediction$estimatedSex
+BetaPlot(MLset[fData(MLset)$CHR %in% c("X","Y"), ], "Sex")
+BetaPlot(MLset[fData(MLset)$CHR %in% c("X","Y"), ], "estimatedSex")
+apply(betas(MLset)[c("cg03554089","cg12653510","cg05533223"), ], 2, function(x) max(x) - min(x)) %>% summary()
+
+# Sample exploratory analysis
+meta <- pData(MLset)
+BetaPlot(MLset, "Individual") 
+BetaPlot(MLset, "Tissue", "Individual") 
+SamplePlots(MLset, mdsvar = meta$Tissue, hcvar = meta$Sample_ID, hmvars = meta[, c("Age", "Individual", "Tissue")], hmcor = T)
+SamplePlots(MLset, hmvars = meta[, c("Age", "Individual", "Tissue")], hmcor = F, mds = F, hclust = F, SNP = F)
+SamplePlots(MLset, hmvars = meta[, c("Age", "Individual", "Tissue")], hmcor = F, mds = F, hclust = F, SNP = T)
+```
+
+
+# Reference Building
+
+### Include all in-house samples in the age range
+
+Ideally, we would like to include more than 100 samples from more than one cohort for each tissue. 
+
+```{r}
+load("~/KoborLab/kobor_space/All_Cohorts/summary.RData")
+summary$age <- as.numeric(summary$age)
+RefAge <- summary %>% .[.$age >= 10 & .$age < 13 & !is.na(.$age), ]
+table(RefAge[, c("cohort", "tissue_specific")])
+```
+
+*176* buccal samples from *GECKO* and *NDN*
+*22* PBMC samples from *GECKO*
+*184* saliva samples from *Humphreys* and *164* from *MIND* (unclear availability)
+*18* whole blood samples from *SGA*
+
+## Search for public dataset for blood and buccal reference
+
+```{r}
+# CRAN packages
+library(reshape2)
+library(dplyr)
+library(RColorBrewer) 
+library(gridExtra)
+library(ggplot2)
+library(DBI)
+library(RSQLite)
+library(GEOmetadb)
+library(ArrayExpress)
+library(readxl)
+library(limma)
+```
+
+
+```{r, eval = FALSE}
+getSQLiteFile(destdir = "~/KoborLab/kobor_space/mfu/GEO")
+con <- dbConnect(SQLite(), "~/KoborLab/kobor_space/mfu/GEO/GEOmetadb.sqlite")
+dbListFields(con, "gsm")
+
+x <- dbGetQuery(con, paste0("select ", paste0(dbListFields(con, "gsm"), collapse = ", "), " from gsm where gpl = 'GPL13534' and  organism_ch1 = 'Homo sapiens'"))
+sampl <- x
+x <- dbGetQuery(con, paste0("select ", paste0(dbListFields(con, "gsm"), collapse = ", "), " from gsm where gpl = 'GPL21145' and  organism_ch1 = 'Homo sapiens'"))
+sampl2 <- x
+x <- dbGetQuery(con, paste0("select ", paste0(dbListFields(con, "gsm"), collapse = ", "), " from gsm where gpl = 'GPL16304' and  organism_ch1 = 'Homo sapiens'"))
+sampl3 <- x
+x <- dbGetQuery(con, paste0("select ", paste0(dbListFields(con, "gsm"), collapse = ", "), " from gsm where gpl = 'GPL23976' and  organism_ch1 = 'Homo sapiens'"))
+sampl4 <- x
+
+allsamp <- rbind(sampl, sampl2)
+allsamp2 <- rbind(sampl3, sampl4)
+allsamp <- rbind(allsamp, allsamp2)
+
+bldID <- c(grep("[Bb]lood|[Pp][Bb]|[Ll]euko|[Pp]eripheral|[Cc]ord|[Bb]uffy", allsamp$characteristics_ch1), 
+           grep("[Bb]lood|[Pp][Bb]|[Ll]euko|[Pp]eripheral|[Cc]ord|[Bb]uffy", allsamp$source_name_ch1),
+           grep("GSE36369", allsamp$series_id))
+bldID <- unique(bldID)
+bldsamp <- allsamp[bldID, ]
+bldGEO <- strsplit(paste0(unique(bldsamp$series_id), collapse = ","), ",")[[1]]
+
+### Just whole blood and PBMC
+# bldID <- c(grep("[Bb]lood|PB|[Pp]eripheral|[Bb]uffy", allsamp$characteristics_ch1), 
+#            grep("[Bb]lood|PB|[Pp]eripheral|[Bb]uffy", allsamp$source_name_ch1),
+#            grep("GSE36369", allsamp$series_id))
+# bldID <- unique(bldID)
+# bldsamp <- allsamp[bldID, ]
+anno <- grep("[Aa]ge", bldsamp$characteristics_ch1, value = T)
+annotable <- strsplit2(anno, ";")
+anno.f <- sapply(annotable, function(x) {
+    x[grep("[Aa]ge", x)]
+}) %>% unlist(.)
+bldped <- bldsamp[grep("age: 1[012]|age at sample collection \\(years\\): 1[012]|age \\(y\\): 1[012]|age \\(years\\): 1[012]", bldsamp$characteristics_ch1), ]
+bldped <- bldsamp[grep("age: [234]|age at sample collection \\(years\\): [234]|age \\(y\\): [234]|age \\(years\\): [234]", bldsamp$characteristics_ch1), ]
+save(bldped, file = "RData/00-Biggs_blood_ped_controls.RData")
+
+bucID <- c(grep("[Bb]uccal|oral swab|BEC", allsamp$characteristics_ch1), 
+           grep("[Bb]uccal|oral swab|BEC", allsamp$source_name_ch1))
+bucID <- unique(bucID)
+bucsamp <- allsamp[bucID, ]
+anno <- grep("[Aa]ge", bucsamp$characteristics_ch1, value = T)
+annotable <- strsplit2(anno, ";") %>% as.data.frame()
+anno.f <- sapply(annotable, function(x) {
+    x[grep("[Aa]ge", x)]
+}) %>% unlist(.)
+bucped <- bucsamp[grep("age: 1[012]|age at sample collection \\(years\\): 1[012]|age \\(y\\): 1[012]|age \\(years\\): 1[012]", bucsamp$characteristics_ch1), ]
+bucped2 <- bucsamp[grep("age: [234]|age at sample collection \\(years\\): [234]|age \\(y\\): [234]|age \\(years\\): [234]", bucsamp$characteristics_ch1), ]
+
+save(bucped, file = "~/maggie.fu/Projects/Biggs/RData/00-Biggs_buccal_ped_controls.RData")
+
+
+# saliva
+salID <- c(grep("[Ss]al", allsamp$characteristics_ch1), 
+           grep("[Ss]al", allsamp$source_name_ch1))
+salID <- unique(salID)
+salsamp <- allsamp[salID, ]
+anno <- grep("[Aa]ge", salsamp$characteristics_ch1, value = T)
+annotable <- strsplit2(anno, ";")
+anno.f <- sapply(annotable, function(x) {
+    x[grep("[Aa]ge", x)]
+}) %>% unlist(.)
+```
+
+### Download the public dataset
+
+```{r, eval = FALSE}
+load("~/maggie.fu/Projects/Biggs/RData/00-Biggs_blood_ped_controls.RData")
+load("~/maggie.fu/Reference/EPIC_fdat.RData")
+load("~/maggie.fu/Reference/HM450_fdat.RData")
+
+# bldGEO <- strsplit(paste0(unique(bldped$series_id), collapse = ","), ",")[[1]] # 22 datasets
+# BLD <- sapply(bldGEO, function (x) getGEO(x, destdir = "~/KoborLab/kobor_space/mfu/GEO/Blood/brigg/"))
+# save(BLD, file = "~/maggie.fu/Projects/Biggs/RData/01-blood_GEO.RData")
+load("~/maggie.fu/Projects/Biggs/RData/01-blood_GEO.RData")
+
+# GSE32148
+Samp <- BLD$GSE32148$GSE32148_series_matrix.txt.gz # ulcerative colitis
+pd <- pData(Samp)
+pd$age <- as.numeric(pd$`age (y):ch1`)
+pd <- pd[pd$age >= 10 & pd$age < 13 & !is.na(pd$age), ] 
+GSE32148 <- Samp[, sampleNames(Samp) %in% rownames(pd)] 
+dim(GSE32148) # 4 not enough
+# GSE32149 # Same as GSE32148
+
+# GSE56105
+Samp <- BLD$GSE56105$GSE56105_series_matrix.txt.gz # healthy
+pd <- pData(Samp)
+pd$age <- as.numeric(pd$`age:ch1`)
+pd <- pd[pd$age >= 10 & pd$age < 13 & !is.na(pd$age), ]
+GSE56105 <- Samp[, sampleNames(Samp) %in% rownames(pd)] 
+dim(GSE56105) # empty data frame -> actual data in suppl file # 222
+#getGEOSuppFiles("GSE56105")
+#gunzip("GSE56105/GSE56105_average_beta.txt.gz")
+GSE56105_B <- read.delim("GEO/GSE56105/GSE56105_average_beta.txt")
+rownames(GSE56105_B) <- GSE56105_B[, 1]
+GSE56105_pval <- GSE56105_B[, grep("Pval", colnames(GSE56105_B))]
+colnames(GSE56105_pval) <- paste0("I", sprintf("%03d", as.numeric(gsub("Detection.Pval.", "", colnames(GSE56105_pval)))))
+GSE56105_beta <- GSE56105_B[, -c(1, grep("Pval", colnames(GSE56105_B)))] %>% .[, pd$title]
+GSE56105_meta <- pd
+rownames(GSE56105_meta) <- pd$title
+
+# GSE56600
+Samp <- BLD$GSE56600$GSE56600_series_matrix.txt.gz # B-ALL
+pd <- pData(Samp)
+pd$age <- as.numeric(pd$`age:ch1`)
+pd <- pd[pd$age >= 10 & pd$age < 13 & !is.na(pd$age), ]
+GSE56600 <- Samp[, sampleNames(Samp) %in% rownames(pd)] 
+dim(GSE56600) # empty data frame # 12
+
+#getGEOSuppFiles("GSE56600")
+#gunzip("GSE56600/GSE56600_Normalized_Illumina_methylation_data.txt.gz")
+GSE56600_beta <- read.delim("GEO/GSE56600/GSE56600_Normalized_Illumina_methylation_data.txt", skip = 4)
+rownames(GSE56600_beta) <- GSE56600_beta[, 1]
+GSE56600_pval <- GSE56600_beta[, grep("Pval", colnames(GSE56600_beta))]
+GSE56600_beta <- GSE56600_beta[, -c(1, grep("Pval", colnames(GSE56600_beta)))]
+colnames(GSE56600_beta) <- gsub("_Average.Beta", "", colnames(GSE56600_beta)) %>% gsub("X", "", .)
+rownames(pd) <- pd$title
+GSE56600_beta <- GSE56600_beta[, rownames(pd)]
+GSE56600_meta <- pd
+# GSE56602 # Same as GSE56600
+
+# GSE52588
+Samp <- BLD$GSE52588$GSE52588_series_matrix.txt.gz # Down syndrome
+pd <- pData(Samp)
+pd$age <- as.numeric(pd$`age:ch1`)
+pd <- pd[pd$age >= 10 & pd$age < 13 & !is.na(pd$age), ]
+GSE52588 <- Samp[, sampleNames(Samp) %in% rownames(pd)] 
+dim(GSE52588) # 2 -> not enough
+
+# GSE64495
+Samp <- BLD$GSE64495$GSE64495_series_matrix.txt.gz # healthy
+pd <- pData(Samp)
+pd$age <- as.numeric(pd$`age:ch1`)
+pd <- pd[pd$age >= 10 & pd$age < 13 & !is.na(pd$age), ]
+GSE64495 <- Samp[, sampleNames(Samp) %in% rownames(pd)] 
+dim(GSE64495) # 3 -> not enough
+
+# GSE60132
+Samp <- BLD$GSE60132$GSE60132_series_matrix.txt.gz # healthy
+pd <- pData(Samp)
+pd$age <- as.numeric(pd$`age:ch1`)
+pd <- pd[pd$age >= 10 & pd$age < 13 & !is.na(pd$age), ]
+GSE60132 <- Samp[, sampleNames(Samp) %in% rownames(pd)] 
+dim(GSE60132) # 19
+
+# GSE82218
+Samp <- BLD$GSE82218$GSE82218_series_matrix.txt.gz # systemic lupus erythematosus
+pd <- pData(Samp)
+pd$age <- gsub("y", "", pd$`age:ch1`) %>% as.numeric(.)
+pd <- pd[pd$age >= 10 & pd$age < 13 & !is.na(pd$age), ]
+GSE82218 <- Samp[, sampleNames(Samp) %in% rownames(pd)] 
+dim(GSE82218) # 2 -> not enough
+# GSE82221 # Same as GSE82218
+
+# GSE97362
+Samp <- BLD$GSE97362$GSE97362_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$age <- as.numeric(pd$`age (years):ch1`)
+pd <- pd[pd$age >= 10 & pd$age < 13 & !is.na(pd$age), ]
+GSE97362 <- Samp[, sampleNames(Samp) %in% rownames(pd)] 
+dim(GSE97362) # 29
+colnames(GSE97362) <- pd$description
+
+# GSE124366
+Samp <- BLD$GSE124366$GSE124366_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$age <- as.numeric(pd$`age at sample collection (years):ch1`)
+pd <- pd[pd$age >= 10 & pd$age < 13 & !is.na(pd$age), ]
+GSE124366 <- Samp[, sampleNames(Samp) %in% rownames(pd)] 
+dim(GSE124366) #66
+identical(rownames(pd), colnames(GSE124366))
+colnames(GSE124366) <- pd$title
+GSE124366 <- GSE124366[, pd$`tissue:ch1` == "PBMC"]
+
+# GSE111165
+Samp <- BLD$GSE111165$`GSE111165-GPL21145_series_matrix.txt.gz`
+pd <- pData(Samp)
+pd$age <- as.numeric(pd$`age:ch1`)
+pd <- pd[pd$age >= 10 & pd$age < 13 & !is.na(pd$age), ]
+GSE111165 <- Samp[, sampleNames(Samp) %in% rownames(pd)] 
+dim(GSE111165) # empty data frame # 6
+
+#getGEOSuppFiles("GSE111165")
+#gunzip("GSE111165/GSE111165_data_processed_detection_p_val_EPIC.csv.gz")
+GSE111165_pval <- read.csv("GEO/GSE111165/GSE111165_data_processed_detection_p_val_EPIC.csv")
+rownames(GSE111165_pval) <- GSE111165_pval[, 2]
+colnames(GSE111165_pval) <- gsub("X", "", colnames(GSE111165_pval)) 
+GSE111165_beta.p <- GSE111165_pval[, -c(1, 2, grep("Detection", colnames(GSE111165_pval)))]
+GSE111165_pval <- GSE111165_pval[, grep("Detection", colnames(GSE111165_pval))]
+    
+#gunzip("GSE111165/GSE111165_signal_intensities_EPIC.csv.gz")
+GSE111165 <- read.csv("GEO/GSE111165/GSE111165_signal_intensities_EPIC.csv")
+rownames(GSE111165) <- GSE111165[, 2]
+GSE111165_M <- GSE111165[, grep("Methylated_Signal", colnames(GSE111165))]
+GSE111165_U <- GSE111165[, grep("Unmethylated_Signal", colnames(GSE111165))]
+colnames(GSE111165_M) <- gsub("_Methylated_Signal", "", colnames(GSE111165_M)) %>% gsub("X", "", .)
+colnames(GSE111165_U) <- gsub("_Unmethylated_Signal", "", colnames(GSE111165_U)) %>% gsub("X", "", .)
+identical(colnames(GSE111165_M), colnames(GSE111165_U))
+identical(rownames(GSE111165_M), rownames(GSE111165_U))
+GSE111165_beta <- GSE111165_M / (GSE111165_M + GSE111165_U)
+
+Samp <- BLD$GSE111165$`GSE111165-GPL21145_series_matrix.txt.gz`
+pd <- pData(Samp)
+identical(paste0(pd$description), colnames(GSE111165_beta))
+colnames(GSE111165_beta) <- pd$title %>% gsub(".*: ", "", .)
+rownames(pd) <- pd$title
+pd$age <- as.numeric(pd$`age:ch1`)
+pd <- pd[pd$age >= 10 & pd$age < 13 & !is.na(pd$age), ]
+GSE111165_beta <- GSE111165_beta[, rownames(pd)]
+GSE111165_meta <- pd
+
+# GSE72777
+Samp <- BLD$GSE72777$GSE72777_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$age <- as.numeric(pd$`age:ch1`)
+pd <- pd[pd$age >= 10 & pd$age < 13 & !is.na(pd$age), ]
+GSE72777 <- Samp[, sampleNames(Samp) %in% rownames(pd)] 
+dim(GSE72777) # empty data frame # 6
+
+#getGEOSuppFiles("GSE72777")
+#untar("GSE72777/GSE72777_RAW.tar")
+#gunzip("GSE72777/GSE72777_datBetaNormalized.csv.gz")
+#gunzip("GSE72777/GSE72777_datSignal.csv.gz")
+GSE72777_beta <- read.csv("GEO/GSE72777/GSE72777_datBetaNormalized.csv")
+GSE72777_int <- read.csv("GEO/GSE72777/GSE72777_datSignal.csv")
+rownames(GSE72777_beta) <- GSE72777_beta[, 1]
+GSE72777 <- GSE72777_beta[, ]
+
+# GSE102177
+Samp <- BLD$GSE102177$GSE102177_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$age <- as.numeric(pd$`age:ch1`)
+pd <- pd[pd$age >= 10 & pd$age < 13 & !is.na(pd$age), ]
+GSE102177 <- Samp[, sampleNames(Samp) %in% rownames(pd)] 
+dim(GSE102177) # 6
+
+# GSE104812
+Samp <- BLD$GSE104812$GSE104812_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$age <- as.numeric(pd$`age (y):ch1`)
+pd <- pd[pd$age >= 10 & pd$age < 13 & !is.na(pd$age), ]
+GSE104812 <- Samp[, sampleNames(Samp) %in% rownames(pd)] 
+dim(GSE104812) # 11
+
+# GSE128801
+Samp <- BLD$GSE128801$GSE128801_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$age <- as.numeric(pd$`chronological age:ch1`)
+pd <- pd[pd$age >= 10 & pd$age < 13 & !is.na(pd$age), ]
+GSE128801 <- Samp[, sampleNames(Samp) %in% rownames(pd)] 
+dim(GSE128801)  
+# 1 -> Not enough sample -> remove
+
+# GSE112611
+Samp <- BLD$GSE112611$GSE112611_series_matrix.txt.gz # Crohn's disease
+pd <- pData(Samp)
+pd$age <- as.numeric(pd$`age:ch1`)
+pd <- pd[pd$age >= 10 & pd$age < 13 & !is.na(pd$age), ]
+GSE112611 <- Samp[, sampleNames(Samp) %in% rownames(pd)] 
+dim(GSE112611) # empty data frame
+
+#getGEOSuppFiles("GSE112611")
+#gunzip("GEO/GSE112611/GSE112611_beta_values.txt.gz")
+GSE112611_beta <- read.delim("GEO/GSE112611/GSE112611_beta_values.txt")
+rownames(GSE112611_beta) <- GSE112611_beta[, 1]
+GSE112611_pval <- GSE112611_beta[, grep("PVal", colnames(GSE112611_beta))]
+GSE112611_beta <- GSE112611_beta[, -c(1, grep("PVal", colnames(GSE112611_beta)))]
+colnames(GSE112611_beta) <- gsub("X", "", colnames(GSE112611_beta))
+GSE112611_beta <- GSE112611_beta[, colnames(GSE112611_beta) %in% pd$description] 
+identical(colnames(GSE112611_beta), as.character(pd$description))
+colnames(GSE112611_beta) <- pd$title %>%
+dim(GSE112611_beta) # empty data frame
+GSE112611_meta <- pd
+
+save(GSE56105_beta, GSE56105_meta, GSE56105_pval, GSE56600_beta, GSE56600_meta, GSE56600_pval, GSE60132, GSE97362, GSE124366, GSE102177, GSE104812, GSE112611_beta, GSE112611_meta, GSE112611_pval, GSE111165_beta, GSE111165_meta, GSE111165_pval, file = "RData/02-blood_GEO_data.RData")
+```
+
+```{r, eval = F}
+load("RData/00-buccal_ped_controls.RData")
+
+bucGEO <- strsplit(paste0(unique(bucped$series_id), collapse = ","), ",")[[1]] # 7 datasets
+BUC <- sapply(bucGEO, function (x) getGEO(x, destdir = "~/KoborLab/kobor_space/mfu/GEO/Buccal/"))
+#save(BUC, file = "~/maggie.fu/Projects/Biggs/RData/01-buccal_GEO.RData")
+
+load("~/maggie.fu/Projects/Biggs/RData/01-blood_GEO.RData")
+
+#GSE80261 # FASD
+Samp <- BUC$GSE80261$GSE80261_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$age <- as.numeric(pd$`age:ch1`)
+pd <- pd[pd$age >= 10 & pd$age < 13 & !is.na(pd$age), ]
+GSE80261 <- Samp[, sampleNames(Samp) %in% rownames(pd)]
+dim(GSE80261)  # 70
+colnames(GSE80261) <- pd$title
+
+#GSE109042 # FASD
+Samp <- BUC$GSE109042$GSE109042_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$age <- as.numeric(pd$`age:ch1`)
+pd <- pd[pd$age >= 10 & pd$age < 13 & !is.na(pd$age), ]
+GSE109042 <- Samp[, sampleNames(Samp) %in% rownames(pd)]
+dim(GSE109042) # 10
+colnames(GSE109042) <- pd$title
+# load("~/maggie.fu/Projects/Emberly/cohort_data/NDN_01_raw.RData") # Load previously created FASD object
+
+# GSE111165
+Samp <- BUC$GSE111165$`GSE111165-GPL21145_series_matrix.txt.gz`
+pd <- pData(Samp)
+pd$age <- as.numeric(pd$`age:ch1`)
+pd <- pd[pd$age >= 10 & pd$age < 13 & !is.na(pd$age), ] 
+GSE111165 <- Samp[, sampleNames(Samp) %in% rownames(pd)] 
+dim(GSE111165) #6
+colnames(GSE111165) <- pd$title
+
+# GSE94734 # WISC
+Samp <- BUC$GSE94734$GSE94734_series_matrix.txt.gz
+pd <- pData(Samp)
+pd$age <- as.numeric(pd$`age:ch1`)
+pd <- pd[pd$age >= 10 & pd$age < 13 & !is.na(pd$age), ] 
+GSE94734 <- Samp[, sampleNames(Samp) %in% rownames(pd)] 
+dim(GSE94734) # 139
+colnames(GSE94734) <- pd$title
+
+# More GECKO (GSE124366)!
+load("~/KoborLab/kobor_space/BRAINSTORM-KoborGroup/Personal  folders/Sarah G/Project GECKO/GECKO data cleaning/4.filtered.data/GECKO2_methylumi_raw_post_sample_mix_up_FILTERED_FINAL.RData")
+GECKO_samp <- read.csv("~/KoborLab/kobor_space/BRAINSTORM-KoborGroup/Personal  folders/Sarah G/Project GECKO/GECKO data cleaning/4.filtered.data/samplesheet_GECKO_all_filtered.csv", stringsAsFactors = F)
+GECKO_meta <- read_excel("~/KoborLab/kobor_space/BRAINSTORM-KoborGroup/Personal  folders/Sarah G/Project GECKO/GECKO data cleaning/4.filtered.data/meta_data_matched_to_array_IDs_filtered.xlsx")
+GECKO_samp <- GECKO_samp %>% .[.$Sample_Group == "BUCCAL", ]
+GECKO_samp$studyid <- gsub("-.*", "", GECKO_samp$Sample_Name) %>% gsub(" .*", "", .) 
+GECKO_meta <- GECKO_meta %>% .[.$Tissue == "BUCCAL", ]
+GECKO_meta <- merge(GECKO_samp, GECKO_meta, by.x =  "studyid", "ArrayID")
+rownames(GECKO_meta) <- GECKO_meta$Sample_Name
+GECKO_meta <- GECKO_meta %>% .[.$childsage >= 10 & .$childsage < 13 & !is.na(.$childsage), ] 
+GECKO <- GECKO.2.filtered[, sampleNames(GECKO.2.filtered) %in% GECKO_meta$Sample_Name] 
+pData(GECKO) <- GECKO_meta[match(pData(GECKO)$sampleID, GECKO_meta$Sample_Name), ] 
+dim(GECKO) # 93
+
+save(GSE80261, GSE109042, GSE111165, GSE94734, GECKO, file = "RData/02-buccal_GEO_data.RData")
+```
+
+### Combine the dataset with enough samples
+```{r}
+load("RData/02-blood_GEO_data.RData")
+load("RData/02-buccal_GEO_data.RData")
+
+# GSE56105
+dim(GSE56105) #222
+GSE56105_meta$cohort <- rep("GSE56105", nrow(GSE56105_meta))
+GSE56105.meta <- GSE56105_meta[, c("cohort", "geo_accession", "title", "data_processing.2", "platform_id", "tissue:ch1", "gender:ch1", "age", "twin:ch1")]
+GSE56105.meta$disease_status <- rep("Healthy", nrow(GSE56105.meta))
+GSE56105.meta$`tissue:ch1` <- gsub("peripheral blood lymphocytes", "WB", GSE56105.meta$`tissue:ch1`)
+colnames(GSE56105.meta) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Twin", "Disease_Status")
+
+# GSE112611
+dim(GSE112611) #109
+GSE112611_meta$cohort <- rep("GSE112611", nrow(GSE112611_meta))
+GSE112611_meta$sentrix_id <- gsub("_.*", "", GSE112611_meta$description)
+GSE112611_meta$sentrix_position <- gsub(".*_", "", GSE112611_meta$description)
+GSE112611_meta$`gender:ch1` <- GSE112611_meta$`gender:ch1` %>% gsub("Female", "F", .) %>% gsub("Male", "M", .)
+GSE112611_meta$source_name_ch1 <- gsub("Peripheral Blood", "WB", GSE112611_meta$source_name_ch1)
+GSE112611_meta$Disease_Status <- GSE112611_meta$`diagnosis:ch1` %>% gsub("non-IBD control", "Healthy", .)
+GSE112611_meta$`disease stage at diagnosis:ch1` <- GSE112611_meta$`disease stage at diagnosis:ch1` %>% gsub("non-IBD control", "Healthy", .)
+GSE112611.meta <- GSE112611_meta[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "sentrix_id", "sentrix_position", "source_name_ch1", "gender:ch1", "age", "baseline vs follow-up:ch1", "Disease_Status", "disease stage at diagnosis:ch1", "disease stage at at follow up:ch1")]
+colnames(GSE112611.meta) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Sentrix_ID", "Sentrix_Position", "Tissue", "Sex", "Age", "Visit", "Disease_Status", "Disease_Stage_Diagnosis", "Disease_Stage_Followup")
+
+# GSE124366
+dim(GSE124366) #66
+pd <- pData(GSE124366)
+pd$cohort <- rep("GSE124366", nrow(pd))
+pd$age <- as.numeric(pd$`age at sample collection (years):ch1`)
+pd <- pd[pd$age >= 10 & pd$age < 13 & !is.na(pd$age), ]
+pd$disease_status <- rep("Healthy", nrow(pd))
+pd <- pd[pd$`tissue:ch1` == "PBMC", ]
+GSE124366.meta <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "sentrix id:ch1", "sentrix position:ch1", "tissue:ch1", "Sex:ch1", "age", "disease_status")]
+colnames(GSE124366.meta) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Sentrix_ID", "Sentrix_Position", "Tissue", "Sex", "Age", "Disease_Status")
+
+# GSE97362
+dim(GSE97362) #29
+pd <- pData(GSE97362)
+pd$cohort <- rep("GSE97362", nrow(pd))
+pd$age <- as.numeric(pd$`age (years):ch1`)
+pd$`tissue:ch1` <- gsub("whole blood", "WB", pd$`tissue:ch1`)
+pd$`disease state:ch1` <- gsub("Control", "Healthy", pd$`disease state:ch1`)
+pd$`gender:ch1` <- pd$`gender:ch1` %>% gsub("female", "F", .) %>% gsub("male", "M", .)
+pd <- pd[pd$age >= 10 & pd$age < 13 & !is.na(pd$age), ]
+GSE97362.meta <- pd[, c("cohort", "geo_accession", "description", "data_processing", "platform_id", "tissue:ch1", "gender:ch1", "age", "disease state:ch1")]
+colnames(GSE97362.meta) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Tissue", "Sex", "Age", "Disease_Status")
+
+dim(GSE56600) #12
+dim(GSE60132) #19
+dim(GSE72777) #6
+dim(GSE102177) #6
+dim(GSE104812) #11
+# -> 486 blood reference
+
+# GSE80261 # FASD
+dim(GSE80261) #70
+pd <- pData(GSE80261)
+pd$cohort <- rep("GSE80261", nrow(pd))
+pd$age <- as.numeric(pd$`age:ch1`)
+pd <- pd[pd$age >= 10 & pd$age < 13 & !is.na(pd$age), ]
+pd$tissue <- rep("BEC", nrow(pd))
+pd$Sex <- pd$`Sex:ch1` %>% gsub("Female", "F", .) %>% gsub("Male", "M", .)
+pd$`disease status:ch1` <- pd$`disease status:ch1` %>% gsub("Control", "Healthy", .)
+pd$`disease subgroup:ch1` <- pd$`disease subgroup:ch1` %>% gsub("Control", "Healthy", .)
+GSE80261.meta <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "sentrix id:ch1", "sentrix position:ch1", "tissue", "Sex", "age", "self-reported ethnicity:ch1", "disease status:ch1", "disease subgroup:ch1", "source_name_ch1")]
+colnames(GSE80261.meta) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Sentrix_ID", "Sentrix_Position", "Tissue", "Sex", "Age", "Ethnicity", "Disease_Status", "Disease_Subgroup", "Individual")
+
+# GSE109042 
+dim(GSE109042) #10
+pd <- pData(GSE109042)
+pd$cohort <- rep("GSE109042", nrow(pd))
+pd$age <- as.numeric(pd$`age:ch1`)
+pd <- pd[pd$age >= 10 & pd$age < 13 & !is.na(pd$age), ]
+pd$tissue <- rep("BEC", nrow(pd))
+pd$Disease_Status <- pd$`disease status:ch1` %>% gsub("Control", "Healthy", .)
+pd$`disease subgroup:ch1` <- pd$`disease subgroup:ch1` %>% gsub("Control", "Healthy", .)
+GSE109042.meta <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "sentrix id:ch1", "sentrix position:ch1", "tissue", "Sex:ch1", "age", "self-reported ethnicity:ch1", "Disease_Status", "disease subgroup:ch1", "source_name_ch1")]
+colnames(GSE109042.meta) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Sentrix_ID", "Sentrix_Position", "Tissue", "Sex", "Age", "Ethnicity", "Disease_Status", "Disease_Subgroup", "Individual")
+
+# GECKO (not in GSE124366) 
+dim(GECKO) #101
+pd <- pData(GECKO)
+pd$cohort <- rep("GSE124366", nrow(pd))
+pd$age <- as.numeric(pd$childsage)
+pd <- pd[pd$age >= 10 & pd$age < 13 & !is.na(pd$age), ]
+pd$Tissue <- rep("BEC")
+pd$disease_status <- rep("Healthy", nrow(pd))
+pd$Sex <- pd$chgender %>% gsub("Female", "F", .) %>% gsub("Male", "M", .)
+#pd$individual <- regmatches(pd$studyid, gregexpr("[[:digit:]]+", pd$studyid)) %>% as.numeric(unlist(.))
+pd$data_processing <- rep("background substracted and color corrected")
+pd$platform_id <- rep("GPL13534")
+GECKO.meta <- pd[, c("cohort", "Sample_Name", "data_processing", "platform_id", "Sentrix_ID", "Sentrix_Position", "Tissue", "Sex", "age", "disease_status" , "hholdincome", "childethnicity", "childnativelang")]
+colnames(GECKO.meta) <- c("Cohort", "Sample_ID", "Data_Processing", "Platform_ID", "Sentrix_ID", "Sentrix_Position", "Tissue", "Sex", "Age", "Disease_Status", "HHIncome", "Ethnicity", "NLanguage")
+
+# GSE94734
+dim(GSE94734) #139
+pd <- pData(GSE94734)
+pd$cohort <- rep("GSE94734", nrow(pd))
+pd$tissue <- rep("BEC", nrow(pd))
+pd$sex <- pd$`gender:ch1` %>% gsub("0", "M", .) %>% gsub("1", "F", .)
+pd$age <- as.numeric(pd$`age:ch1`)
+pd <- pd[pd$age >= 10 & pd$age < 13 & !is.na(pd$age), ]
+pd$disease_status <- rep("Healthy", nrow(pd))
+GSE94734.meta <- pd[, c("cohort", "geo_accession", "title", "data_processing", "platform_id", "sentrix_id:ch1", "sentrix_position:ch1", "tissue", "sex", "age", "genetic ancestry:ch1", "disease_status", "twin pairs:ch1", "income:ch1")]
+colnames(GSE94734.meta) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Sentrix_ID", "Sentrix_Position", "Tissue", "Sex", "Age", "Ethnicity", "Disease_Status", "Twin", "HHIncome")
+# -> 319 buccal reference
+
+### Mixed tissue
+
+# GSE111165
+dim(GSE111165) #6
+GSE111165_meta$cohort <- rep("GSE111165", nrow(GSE111165_meta))
+GSE111165_meta$disease_status <- rep("Healthy", nrow(GSE111165_meta))
+GSE111165_meta$sample_id <- GSE111165_meta$title %>% gsub(".*: ", "", .)
+GSE111165_meta$`tissue:ch1` <- gsub("buccal", "BEC", GSE111165_meta$`tissue:ch1`) %>%
+    gsub("saliva", "SAL", .) %>% gsub("blood", "WB", .) %>% gsub("brain", "BRN", .)
+GSE111165_meta$Sex <- GSE111165_meta$`Sex:ch1` %>% gsub("Male", "M", .)
+GSE111165.meta <- GSE111165_meta[, c("cohort", "geo_accession", "sample_id", "data_processing", "platform_id", "slide:ch1", "array:ch1", "tissue:ch1", "Sex", "age", "subject:ch1", "disease_status")]
+colnames(GSE111165.meta) <- c("Cohort", "GEO_Accession", "Sample_ID", "Data_Processing", "Platform_ID", "Sentrix_ID", "Sentrix_Position", "Tissue", "Sex", "Age", "Individual", "Disease_Status")
+
+# TB
+TB.meta <- pData(TB)
+TB.meta$Tissue <- gsub("Buccal", "BEC", TB.meta$Tissue) %>% gsub("Saliva", "SAL", .)
+TB.meta$cohort <- rep("ASXL1", nrow(TB.meta))
+TB.meta$disease_status <- gsub("Pat", "ASXL1", TB.meta$Individual) %>% gsub("Ctrl", "Control", .)
+TB.meta$data_processing <- rep("background substracted and color corrected", nrow(TB.meta))
+TB.meta$platform_id <- rep("GPL13534", nrow(TB.meta))
+TB.meta <- TB.meta[, c("cohort", "Sample_Name", "data_processing", "platform_id", "Sentrix_ID", "Sentrix_Position", "Tissue", "Sex", "Age", "Individual", "Ethnicity", "disease_status")]
+colnames(TB.meta) <- c("Cohort", "Sample_ID", "Data_Processing", "Platform_ID", "Sentrix_ID", "Sentrix_Position", "Tissue", "Sex", "Age", "Individual", "Ethnicity", "Disease_Status")
+```
+
+```{r}
+allpd <- rbind.fill(GSE56105.meta, GSE112611.meta, GSE124366.meta, GSE97362.meta, GSE80261.meta, GSE109042.meta, GECKO.meta, GSE94734.meta, GSE111165.meta, TB.meta)
+allpd$Twin <- allpd$Twin %>% gsub("0|NA", NA, .)
+allpd$Disease_Stage_Diagnosis <- allpd$Disease_Stage_Diagnosis %>% gsub("NA", NA, .)
+allpd$Disease_Stage_Followup <- allpd$Disease_Stage_Followup %>% gsub("NA", NA, .)
+rownames(allpd) <- allpd$Sample_ID
+CpG <- Reduce(intersect, list(rownames(GSE56105_beta), 
+                              rownames(GSE112611_beta), 
+                              rownames(exprs(GSE124366)), 
+                              rownames(exprs(GSE97362)), 
+                              rownames(exprs(GSE80261)),
+                              rownames(exprs(GSE109042)), 
+                              rownames(betas(GECKO)),
+                              rownames(exprs(GSE94734)),
+                              rownames(GSE111165_beta),
+                              rownames(betas(TB))))
+allbt <- cbind(GSE56105_beta[CpG, ], GSE112611_beta[CpG, ], 
+               exprs(GSE124366)[CpG, ], exprs(GSE97362)[CpG, ], 
+               exprs(GSE80261)[CpG, ], exprs(GSE109042)[CpG, ],
+               betas(GECKO)[CpG, ], exprs(GSE94734)[CpG, ],
+               GSE111165_beta[CpG, ], betas(TB)[CpG, ])
+
+identical(rownames(allpd), colnames(allbt))
+PedRef <- new("MethyLumiSet", 
+              betas = as.matrix(allbt), 
+              phenoData = as(allpd, "AnnotatedDataFrame"), 
+              featureData = TB@featureData[rownames(allbt)], 
+              experimentData = TB@experimentData, 
+              .__classVersion__ = TB@.__classVersion__)
+
+#save(allbt, allpd, PedRef, file = "RData/03-all_GEO_reference.RData")
+```
+
+```{r}
+load("RData/03-all_GEO_reference.RData")
+MLset <- PedRef
+DTname <- "PedRef"
+
+# Sex prediction
+if (is.null(fData(MLset)$CHR)) {
+    if (dim(MLset)[[1]] > 600000) {
+        load("~/maggie.fu/Reference/EPIC_fdat.RData")
+        fdat <- merge(fData(MLset), fData_EPIC, by = 0, sort = F)
+    } else if (dim(MLset)[[1]] > 300000) {
+        load("~/maggie.fu/Reference/HM450_fdat.RData")
+        fdat <- merge(fData(MLset), fData_450, by = 0, sort = F)
+    }
+    rownames(fdat) <- fdat$Row.names
+    fData(MLset) <- fdat[rownames(MLset), -1]
+}
+prediction <- SexPred(MLset, th = 0.79)
+pData(MLset)$estimatedSex <- prediction$estimatedSex
+mismatch <- pData(MLset)[pData(MLset)$estimatedSex != pData(MLset)$Sex, c("Sex", "estimatedSex")]
+mismatch <- cbind(mismatch, prediction$score[sampleNames(MLset)[pData(MLset)$estimatedSex != pData(MLset)$Sex]])
+# The estimated sex of samples 14-012_At Dx,control-52,EMVB153F do not match the reported sex.
+#               Sex   estimatedSex    score
+# 14-012_At Dx  M           F       0.7489666
+# control-52    F           M       0.8945490
+# EMVB153F      M           F       0.6976677
+# The score of 14-012_At is somewhat reasonable, but the other two may need to be removed
+p1 <- BetaPlot(MLset[fData(MLset)$CHR %in% c("X","Y"), ], "Sex")
+p2 <- BetaPlot(MLset[fData(MLset)$CHR %in% c("X","Y"), ], "estimatedSex")
+grid.arrange(p1, p2, ncol = 2)
+BetaPlot(MLset[fData(MLset)$CHR %in% c("X","Y"), !sampleNames(MLset) %in% c("EMVB153F", "control-52")], "Sex")
+# Beta distribution also showed that "EMVB153F" and "control-52" are really weird and should be removed
+
+# Age prediction 
+bt_horvath <- AgePredDat(MLset, Version = "Old", DTname = DTname)
+meta <- pData(MLset)
+meta$Female <- meta$Sex %>% 
+                gsub("M", "0", .) %>%
+                gsub("F", "1", .) # horvath anno needs age, female, and tissue type
+anno_horvath <- data.frame("SampleID" = colnames(bt_horvath)[-1], "Age" = meta$Age, "Female" = meta$Female, "Tissue" = meta$Tissue)
+write.table(anno_horvath, paste0("DNAmClock/", DTname, "_anno_horvath.csv"), row.names = F, sep = ",")
+out_horvath <- read.csv(paste0("DNAmClock/", DTname, "_betas_horvath.output.csv"), stringsAsFactors = F) # Import Horvath calculator result
+
+ggplot(out_horvath, aes(Age, DNAmAge, color = Tissue, shape = predictedGender)) + geom_point() + geom_abline() + theme_bw() # outliers are screwing up the plots (EMVB153F and control-119)
+epiage <- out_horvath[, c("SampleID", "DNAmAge", "BioAge1HA", "AgeAccelerationResidual", "AAHOAdjCellCounts", "BioAge4HAStaticAdjAge")]
+colnames(epiage) <- c("Sample_ID", "Horvath", "Hannum", "UEAA", "IEAA", "EEAA")
+identical(epiage$Sample_ID, sampleNames(MLset)) # All sample except for X in front
+pData(MLset) <- cbind(pData(MLset), epiage[, -1])
+
+# Sample exploratory analysis
+meta <- pData(MLset)
+BetaPlot(MLset, "Cohort") 
+BetaPlot(MLset, "Tissue") # one buccal sample in GSE124366 that have extremely poor quality
+
+SamplePlots(MLset, mdsvar = meta$Tissue, hcvar = meta$Sample_ID, hmvars = meta[, c("Age", "Cohort", "Platform_ID", "Tissue", "Disease_Status")], hmcor = T)
+SamplePlots(MLset, mdsvar = meta$Cohort, hmvars = meta[, c("Age", "Cohort", "Platform_ID", "Tissue", "Disease_Status", "Individual")], hmcor = F, mds = T, hclust = F, SNP = F)
+SamplePlots(MLset, hmvars = meta[, c("Age", "Individual", "Tissue")], hmcor = F, mds = F, hclust = F, SNP = T)
+SamplePlots(MLset, hmvars = meta[, c("Age", "Cohort", "Platform_ID", "Tissue", "Disease_Status")], hmcor = T, mds = F, hclust = F, SNP = F, hmname = F)
+
+# Correlation plots 
+library(snow)
+library(pvclust)
+result <- parPvclust(betas(MLset), method.dist="cor", method.hclust="average", nboot = 1000)
+```
+
+## Try Lisa's Ped Clock
+
+```{r}
+# Nicole wrote the amazing code to get Lisa's clock running!
+source("~/KoborLab/kobor_space/shared_coding_resource/Ped_Age_Predictor_McEwen/Age_Pred_McEwen_NG.R")
+
+load("RData/03-all_GEO_reference.RData")
+MLset <- PedRef
+MLset <- MLset[, !sampleNames(MLset) %in% c("EMVB089H ")]
+
+MLset_BEC <- MLset[,pData(MLset)$Tissue == "BEC"]
+MLset_PA <- PedAge_McEwen_NG(MLset_BEC)
+MLset_PA$Sample_ID <- as.character(MLset_PA$SampleID) %>% gsub("X", "", .) %>% gsub("\\.", "-", .)
+#MLset_PA <- MLset_PA[MLset_PA$SampleID!= "EMVB089H.", ]
+pData(MLset)$PedBE <- NA
+sum(MLset_PA$Sample_ID %in% rownames(pData(MLset)))
+pData(MLset)[MLset_PA$Sample_ID, "PedBE"] <-  MLset_PA$DNAmAge
+
+save(allbt, allpd, PedRef, MLset, file = "RData/03-all_GEO_reference.RData")
+```
+
+
+### Sample / Probe QC
+
+```{r}
+# Sample QC
+#out1 <- DetPBisCTest(MLset)
+out2 <- detectOutlier(as.matrix(betas(MLset))) %>% which(.) # This calculates potential outliers
+out3 <- outlyx(MLset) 
+out3 <- rownames(out3)[out3$outliers == T]
+out4 <- locfdr_LMM(betas(MLset), pData(MLset))
+#save(out2, out3, out4, file = "RData/04-outliers.RData")
+load("RData/04-outliers.RData")
+c(list(ClustOutlier = out2), list(IQRnPCOutlier = out3), list(LocfdrOutlier = out4))
+out <- table(c(names(out4), out3, names(out2))) %>% .[.==3] %>% names() # remove samples that are identified as outliers in all methods (except for brain)
+BetaPlot(MLset[, sampleNames(MLset) %in% out], "Sample_ID") # examine what they look like
+# EMVB153F is the really weird sample
+MLset <- MLset[, !sampleNames(MLset) %in% c("EMVB117L", "EMVB153F", "EMVC044D")]
+out <- table(c(names(out4), out3, names(out2))) %>% .[.==2] %>% names()
+BetaPlot(MLset[, sampleNames(MLset) %in% out], "Sample_ID") 
+# it seems like both FASD samples are very weird and should be removed, the others are kind of okay and will not be removed
+MLset <- MLset[, !sampleNames(MLset) %in% c("E0014_FASD", "WD216_FASD")]
+MLset <- MLset[, !sampleNames(MLset) %in% c("control-52", "control-119")]
+
+# Probe filtering
+MLset.P <- ProbeFilter(MLset, Platform = "EPIC", pFilter = F, SexProbeFilter = T)
+flist <- MLset.P[[2]]
+MLset.P <- MLset.P[[1]]
+
+# Remake the age~ dnamage plot
+meta <- pData(MLset.P) %>% .[.$Disease_Status %in% c("Control", "Healthy", "ASXL1"), ]
+ggplot(meta, aes(Age, PedBE)) + geom_smooth(method = "lm") + geom_point(aes(color = Disease_Status)) + theme_classic()
+meta <- pData(MLset.P) %>% .[.$Tissue == "BEC", ]
+ggplot(meta, aes(Age, Horvath)) + geom_smooth(method = "lm") + geom_point(aes(color = Disease_Status)) + theme_classic()
+lm(Horvath ~ Age, data = meta) %>% residuals()
+meta <- pData(MLset.P) %>% .[.$Tissue == "WB", ]
+ggplot(meta, aes(Age, Horvath)) + geom_smooth(method = "lm") + geom_point(aes(color = Disease_Status)) + theme_classic()
+lm(Horvath ~ Age, data = meta) %>% residuals()
+meta <- pData(MLset.P) %>% .[.$Tissue == "PBMC", ]
+ggplot(meta, aes(Age, Horvath)) + geom_smooth(method = "lm") + geom_point(aes(color = Disease_Status)) + theme_classic()
+lm(Horvath ~ Age, data = meta) %>% residuals()
+
+meta <- pData(MLset.P)
+ggplot(meta[meta$Disease_Status %in% c("Healthy", "ASXL1", "Control") & meta$Tissue %in% c("WB", "PBMC", "BEC"), ], aes(Age, DNAmAge, color = Tissue, shape = Disease_Status)) + geom_point(size = 2) + scale_shape_manual(values = c(18, 15, 1)) + geom_abline() + theme_bw()
+SamplePlots(MLset.P[, meta$Tissue %in% c("WB", "PBMC", "BEC")], hmvars = meta[, c("Age", "Cohort", "Platform_ID", "Tissue", "Disease_Status")], hmcor = T, mds = F, hclust = F, SNP = F, hmname = F)
+
+save(MLset.P, file = "RData/04-outliers_removed_probe_filtered.RData")
+```
+
+### Normalization
+
+```{r, eval = F}
+# Imputation of missing data
+bt_imputed <- impute.knn(betas(MLset.P))
+bt_imputed <- bt_imputed$data
+betas(MLset.P) <- bt_imputed
+
+# Normalization (intra- and inter-sample)
+# MLset.N <- dasen(MLset.P)
+# NormPlot(MLset.P, MLset.N)
+
+# OR BMIQ
+nfitmax <- sum(fData(MLset.P)$INFINIUM_DESIGN_TYPE == "I")
+MLset.N <- BMIQ(MLset.P, nfit = nfitmax)
+NormPlot(MLset.P, MLset.N)
+BetaPlot(MLset.P, "Tissue", "Individual") 
+#save(MLset.N, file = "RData/05-normalized.RData")
+```
+
+### Batch correction
+
+```{r}
+load("RData/05-normalized.RData")
+
+# Batch correction
+MLset.C <- MLset.N
+
+meta <- pData(MLset.N)
+meta$Sentrix_Position <- as.character(meta$Sentrix_Position)
+meta$Sentrix_row <- sapply(1:nrow(meta), function(x) strsplit(as.character(meta$Sentrix_Position[x]), split = "C")[[1]][1])
+levels(meta$Sentrix_row) <- c(1,2,3,4,5,6,7,8)
+meta[meta$Individual == "Ctrl" & !is.na(meta$Individual), "Disease_Status"] <- "Healthy"
+pData(MLset.C) <- meta
+meta <- pData(MLset.C)
+
+meta_categorical <- meta[, c("Cohort", "Platform_ID", "Sentrix_ID", "Sentrix_row", "Tissue", "Sex", "Disease_Status")] 
+colnames(meta_categorical) <- c("Cohort", "Platform", "Barcode", "Barcode Position", "Tissue", "Sex", "Disease Status")
+meta_continuous <- meta[, c("Age"), drop = F] 
+colnames(meta_continuous) <- "Age"
+heat_scree_plot(MLset.N)
+
+# Try the multiple test corrected plot
+source("~/maggie.fu/Functions/PCA_plot.R")
+sPCA <- nsprcomp(betas(MLset.N), scale. = TRUE)
+PCAC <- prcomp(betas(MLset.C))
+PCA_Plot(PCAC)
+
+# Subset out only blood & buccal and healthy + mut sample to make batch correction better
+MLset.C <- MLset.C[, sampleNames(MLset.C) %in% rownames(meta[meta$Tissue %in% c("BEC", "PBMC", "WB"), ])]
+MLset.C <- MLset.C[, sampleNames(MLset.C) %in% rownames(meta[meta$Disease_Status %in% c("Healthy", "Crohn's disease", "FASD", "ASXL1"), ])]
+meta <- pData(MLset.C)
+dim(MLset.C)
+# Features  Samples 
+#   405686      730 
+
+#Combat
+mod <- model.matrix(~ as.factor(Tissue) + as.factor(Disease_Status), data = meta)
+M_c1 <- ComBat(beta2m(betas(MLset.C)), batch = meta$Cohort, mod = mod)
+M_c2 <- ComBat(M_c1, batch = meta$Platform_ID, mod = mod)
+
+# Use SVA to remove other batch effect (SentrixID and row missing from some cohorts)
+mod0 <- model.matrix(~1, data = meta)
+# (n.sv <- num.sv(M_c2, mod, method = "leek"))
+n.sv <- 2
+svobj <- sva(M_c2, mod, mod0, n.sv = n.sv)
+
+betas(MLset.C) <- m2beta(M_c2)
+heat_scree_plot(MLset.C)
+
+save(MLset.C, svobj, file = "RData/06-batch_corrected.RData")
+save(MLset.C, svobj, file = "RData/06-batch_corrected_tissue_protected.RData")
+save(MLset.C, svobj, file = "RData/06-batch_corrected_original.RData")
+```
+
+```{r}
+load("RData/06-batch_corrected_tissue_protected.RData")
+
+# Sanity Check
+meta <- pData(MLset.N)
+meta <- pData(MLset.C)
+
+Loadings.N <- prcomp(betas(MLset.N)) %>% .$rotation %>% unclass() %>% as.data.frame()
+Loadings.C <- prcomp(betas(MLset.C)) %>% .$rotation %>% unclass() %>% as.data.frame()
+PC_F <- cbind(Loadings.N[, 1:10], meta[, c("Cohort", "Platform_ID", "Sentrix_ID", "Sentrix_row", "Sex", "Tissue", "Disease_Status")])
+PC_F <- cbind(Loadings.C[, 1:10], meta[, c("Cohort", "Platform_ID", "Sentrix_ID", "Sentrix_row", "Sex", "Tissue", "Disease_Status")])
+ggplot(PC_F, aes(PC1, PC2, color = Cohort)) + geom_point() + theme_bw()
+ggplot(PC_F, aes(PC1, PC2, color = Platform_ID)) + geom_point() + theme_bw()
+ggplot(PC_F, aes(PC1, PC2, color = Sentrix_row)) + geom_point() + theme_bw()
+ggplot(PC_F, aes(PC1, PC2, color = Sex)) + geom_point() + theme_bw()
+ggplot(PC_F, aes(PC1, PC2, color = Tissue)) + geom_point() + theme_bw()
+ggplot(PC_F, aes(PC1, PC2, color = Disease_Status)) + geom_point() + theme_bw()
+```
+
+```{r}
+# See if Sentrix ID / row are correlated with either SV
+colnames(svobj$sv) <- c("sv1", "sv2")
+meta <- pData(MLset.C)
+meta <- cbind(meta, svobj$sv) %>% as.data.frame()
+aov(meta$sv1 ~ meta$Sentrix_ID + meta$Sentrix_row) %>% summary()
+#                   Df  Sum Sq   Mean Sq F value Pr(>F)
+# meta$Sentrix_ID  133 0.31132 0.0023408   3.640 <2e-16 ***
+# meta$Sentrix_row   7 0.00598 0.0008538   1.328  0.236
+aov(meta$sv2 ~ meta$Sentrix_ID + meta$Sentrix_row) %>% summary()
+#                   Df Sum Sq   Mean Sq F value Pr(>F)
+# meta$Sentrix_ID  133 0.2685 0.0020188   3.181 <2e-16 ***
+# meta$Sentrix_row   7 0.0030 0.0004292   0.676  0.692
+
+pData(MLset.C) <- meta
+ggplot(meta, aes(sv1, sv2, color = Sentrix_ID)) + geom_point()
+ggplot(meta, aes(sv1, sv2, color = Sentrix_row)) + geom_point()
+ggplot(meta, aes(sv1, sv2, color = Tissue)) + geom_point()
+
+with(meta, aov(sv1 ~ Epi + Fib + B + NK + CD4T + CD8T + Mono + Neutro + Eosino)) %>% summary()
+with(meta, aov(sv2 ~ Epi + Fib + B + NK + CD4T + CD8T + Mono + Neutro + Eosino)) %>% summary()
+
+# Given that sv1 and sv2 are significantly associated with Sentrix ID and Sentrix row, we will use them as proxy for those measures, and adjust them with combat
+mod <- model.matrix(~ as.factor(Tissue) + as.factor(Disease_Status), data = meta)
+# M_c3 <- ComBat(M_c2, batch = meta$Sentrix_ID, mod = mod)
+# M_c4 <- ComBat(M_c3, batch = meta$Platform_ID, mod = mod)
+# Cannot do it because svs are continuous variables -> will regress out with cell type
+
+save(MLset.C, svobj, file = "RData/06-batch_corrected_tissue_protected.RData")
+```
+
+
+### Cell type estimation
+
+```{r}
+load("RData/06-batch_corrected_tissue_protected.RData")
+
+# Cell-type estimation
+meta <- pData(MLset.C)
+pData(MLset.C) <- meta[, 1:25]
+
+MLset.C.bl <- MLset.C[, sampleNames(MLset.C) %in% rownames(meta[meta$Tissue %in% c("WB", "PBMC"), ])]
+celltype <- ECC9(betas(MLset.C.bl), tissueType = "blood")
+ECCcounts <- as.data.frame(celltype$counts)
+if (identical(sort(rownames(ECCcounts)), sort(rownames(pData(MLset.C.bl))))){
+    meta <- cbind(pData(MLset.C.bl), ECCcounts[rownames(pData(MLset.C.bl)), ])
+    if (identical(rownames(meta), rownames(pData(MLset.C.bl)))){
+        pData(MLset.C.bl) <- meta
+    } else stop("The sample names do not match")
+} else stop("The sample names are not the same")
+
+MLset.C.wb <- MLset.C.bl[, pData(MLset.C.bl)$Tissue == "WB"]
+MLset.C.pbmc <- MLset.C.bl[, pData(MLset.C.bl)$Tissue == "PBMC"]
+
+#Heatscree
+meta <- pData(MLset.C.wb)
+meta_categorical <- meta[, c("Cohort", "Platform_ID", "Sentrix_ID", "Sentrix_row", "Sex", "Disease_Status")] 
+colnames(meta_categorical) <- c("Cohort", "Platform", "Barcode", "Barcode Position", "Sex", "Disease Status")
+meta_continuous <- meta[, c("Age", "Bcell", "NK", "CD4T", "CD8T", "Mono", "Gran", "sv1", "sv2")] 
+PCA.wb <- prcomp(betas(MLset.C.wb))
+PCA_Plot(PCA.wb)
+
+meta <- pData(MLset.C.pbmc)
+meta_categorical <- meta[, c("Cohort", "Sentrix_ID", "Sentrix_row", "Sex", "Disease_Status")] 
+colnames(meta_categorical) <- c("Cohort", "Barcode", "Barcode Position", "Sex", "Disease Status")
+meta_continuous <- meta[, c("Age", "Bcell", "NK", "CD4T", "CD8T", "Mono", "Gran", "sv1", "sv2")] 
+PCA.pbmc <- prcomp(betas(MLset.C.pbmc))
+PCA_Plot(PCA.pbmc)
+
+# Blood
+BloodPlot(MLset.C.wb, "Sex", "categorical", premethod = "ECC")
+BloodPlot(MLset.C.wb, "Disease_Status", "categorical", premethod = "ECC")
+BloodPlot(MLset.C.pbmc, "Disease_Status", "categorical", premethod = "ECC")
+BetaPlot(MLset.C.bl, "Cohort")
+
+# Epidish
+beta.m <- beta2m(betas(MLset.C))
+data(centDHSbloodDMC.m) 
+data(centEpiFibIC.m)
+data(DummyBeta.m)
+
+counts <- hepidish(betas(MLset.C), ref1.m = centEpiFibIC.m, ref2.m = centBloodSub.m, h.CT.idx = 3, method = "CP")
+frac.p <- melt(counts) #Calls out the estimates
+(plot <- ggplot(frac.p, aes(Var2, value)) + geom_boxplot() + geom_point())
+if (identical(sort(rownames(counts)), sort(rownames(pData(MLset.C))))){
+    meta <- cbind(pData(MLset.C), counts[rownames(pData(MLset.C)), ])
+    if (identical(rownames(meta), rownames(pData(MLset.C)))){
+        pData(MLset.C) <- meta
+    } else stop("The sample names do not match")
+} else stop("The sample names are not the same")
+BetaPlot(MLset.C, "Sex")
+BetaPlot(MLset.C, "Tissue")
+BetaPlot(MLset.C, "Cohort")
+BloodPlot(MLset.C, "Sex", "categorical", premethod = "EPIDISH") 
+
+save(MLset.C, MLset.C.bl, file = "RData/07-celltype_estimate.RData")
+save(MLset.C, file = "RData/07-celltype_estimate_out_removed.RData")
+```
+
+
+## Analysis
+
+### Check cell type differences
+
+```{r}
+meta <- pData(MLset.C)
+meta[meta$Individual == "Ctrl" & !is.na(meta$Individual), "Disease_Status"] <- "Ctrl"
+pData(MLset.C) <- meta
+
+PedRef.wb <- MLset.C[, pData(MLset.C)$Tissue == "WB" & pData(MLset.C)$Disease_Status %in% c("Healthy", "Ctrl", "ASXL1")]
+BetaPlot(PedRef.wb, "Cohort")
+PedRef.pbmc <- MLset.C[, pData(MLset.C)$Tissue == "PBMC" & pData(MLset.C)$Disease_Status %in% c("Healthy", "Ctrl", "ASXL1")]
+BetaPlot(PedRef.pbmc, "Cohort")
+PedRef.bu <- MLset.C[, pData(MLset.C)$Tissue == "BEC" & pData(MLset.C)$Disease_Status %in% c("Healthy", "Ctrl", "ASXL1")]
+BetaPlot(PedRef.bu, "Cohort")
+
+meta <- pData(PedRef.bu)
+meta_categorical <- meta[, c("Cohort", "Platform_ID", "Sentrix_ID", "Sentrix_row", "Sex", "Disease_Status")] 
+colnames(meta_categorical) <- c("Cohort", "Platform", "Barcode", "Barcode Position", "Sex", "Disease Status")
+meta_continuous <- meta[, c("Age", "Epi", "Fib", "B", "NK", "CD4T", "CD8T", "Mono", "Neutro", "sv1", "sv2")]
+colnames(meta_continuous) <- c("Age", "Epi", "Fib", "Bcell", "NK", "CD4T", "CD8T", "Mono", "Gran", "sv1", "sv2")
+PCA.bu <- prcomp(betas(PedRef.bu))
+PCA_Plot(PCA.bu)
+counts <- hepidish(betas(PedRef.bu), ref1.m = centEpiFibIC.m, ref2.m = centBloodSub.m, h.CT.idx = 3, method = "RPC") %>% as.data.frame(.)
+counts$Sample_ID <- rownames(counts)
+BloodPlot(PedRef.bu, "Disease_Status", "categorical", premethod = "EPIDISH", counts)
+```
+
+### Examine regions previously idenitied in other papers to be differentially methylated in ASXL1 patients
+
+```{r}
+load("~/maggie.fu/Reference/EPIC_fdat.RData")
+
+asxlgenes <- c("ARID5B", "BCL6", "DIRC2", "ICAM4", "RASSF1", "PRAP1", "TFAP2A", "TRPM2", "TNXB")
+mcolor <- c("#fc8d62", "#66c2a5", "light gray")
+malpha <- c(1, 1, 0.2)
+plotmultigeneregion(PedRef.bu, asxlgenes, pData(PedRef.bu)$Disease_Status, cscale = mcolor, ascale = malpha)
+mcolor <- c("#fc8d62", "light gray")
+malpha <- c(1, 0.2)
+plotmultigeneregion(PedRef.pbmc, asxlgenes, pData(PedRef.pbmc)$Disease_Status, cscale = mcolor, ascale = malpha)
+plotmultigeneregion(PedRef.wb, asxlgenes, pData(PedRef.wb)$Disease_Status, cscale = mcolor, ascale = malpha)
+```
+
+```{r}
+# Sanity Check
+SamplePlots(MLset.C, mdsvar = meta$Tissue, hcvar = meta$Tissue, hmvars = meta[, c("Age", "Cohort", "Platform_ID", "Tissue", "Disease_Status")], hmcor = T)
+
+Loadings <- prcomp(betas(MLset.C)) %>% .$rotation %>% unclass() %>% as.data.frame()
+PC_F <- cbind(Loadings.C[, 1:10], meta[, c("Cohort", "Platform_ID", "Sentrix_ID", "Sex", "Tissue", "Disease_Status")])
+ggplot(PC_F, aes(PC1, PC2, color = Cohort)) + geom_point()
+ggplot(PC_F, aes(PC1, PC2, color = Platform_ID)) + geom_point()
+ggplot(PC_F, aes(PC1, PC2, color = Sentrix_ID)) + geom_point() 
+ggplot(PC_F, aes(PC1, PC2, color = Sex)) + geom_point()
+ggplot(PC_F, aes(PC1, PC2, color = Tissue)) + geom_point()
+ggplot(PC_F, aes(PC1, PC2, color = Disease_Status)) + geom_point()
+```
+
+### Regress out cell type
+
+```{r}
+# Check for cell type differences
+BloodPlot(PedRef.wb, "Disease_Status", "categorical", premethod = "EPIDISH")
+BloodPlot(PedRef.pbmc, "Disease_Status", "categorical", premethod = "EPIDISH")
+BloodPlot(PedRef.bu, "Disease_Status", "categorical", premethod = "EPIDISH")
+
+# deconvolute - performed separately for each tissue
+## Buccal
+counts <- pData(PedRef.bu)[, c("Epi", "Fib", "B", "NK", "CD4T", "CD8T", "Mono", "Neutro", "Eosino")]
+countsClr <- as.data.frame(clr(counts + 1)) %>% cbind(pData(PedRef.bu)[, c("sv1", "sv2")])
+countsPCA <- prcomp(countsClr, scale = T)
+blood <- as.data.frame(countsPCA$x)
+residuals <- t(apply(betas(PedRef.bu), 1, function(x){
+    residuals(summary(lm(x ~ PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data = blood)))
+    }))
+PedRef.bu.cr <- PedRef.bu
+adj.residuals <- residuals + matrix(apply(betas(PedRef.bu), 1, mean), nrow = nrow(residuals), ncol = ncol(residuals))
+adj.residuals[adj.residuals <= 0] <- 0.0001 # convert any values that are less than or equal to zero to 0.0001
+adj.residuals[adj.residuals > 1] <- 0.9999 # convert any values that are greater than 1 to 0.9999
+betas(PedRef.bu.cr) <- adj.residuals 
+
+counts <- hepidish(betas(PedRef.bu.cr), ref1.m = centEpiFibIC.m, ref2.m = centBloodSub.m, h.CT.idx = 3, method = "RPC") %>% as.data.frame(.)
+counts$Sample_ID <- rownames(counts)
+BloodPlot(PedRef.bu.cr, "Disease_Status", "categorical", premethod = "EPIDISH", counts)
+
+###################################################################################################
+
+## WB
+counts <- pData(PedRef.wb)[, c("Epi", "Fib", "B", "NK", "CD4T", "CD8T", "Mono", "Neutro", "Eosino")]
+countsClr <- as.data.frame(clr(counts + 1)) #%>% cbind(pData(PedRef.wb)[, c("sv1", "sv2")])
+countsPCA <- prcomp(countsClr, scale = T)
+blood <- as.data.frame(countsPCA$x)
+residuals <- t(apply(betas(PedRef.wb), 1, function(x){
+    residuals(summary(lm(x ~ PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8, data = blood)))
+    }))
+PedRef.wb.cr <- PedRef.wb
+adj.residuals <- residuals + matrix(apply(betas(PedRef.wb), 1, mean), nrow = nrow(residuals), ncol = ncol(residuals))
+adj.residuals[adj.residuals <= 0] <- 0.0001
+adj.residuals[adj.residuals > 1] <- 0.9999
+betas(PedRef.wb.cr) <- adj.residuals 
+
+counts <- hepidish(betas(PedRef.wb.cr), ref1.m = centEpiFibIC.m, ref2.m = centBloodSub.m, h.CT.idx = 3, method = "RPC") %>% as.data.frame(.)
+counts$Sample_ID <- rownames(counts)
+BloodPlot(PedRef.wb.cr, "Disease_Status", "categorical", premethod = "EPIDISH", counts) # Looks weird, got a wide spread
+
+###################################################################################################
+
+### PBMC
+counts <- pData(PedRef.pbmc)[, c("Epi", "Fib", "B", "NK", "CD4T", "CD8T", "Mono", "Neutro", "Eosino")]
+countsClr <- as.data.frame(clr(counts + 1)) #%>% cbind(pData(PedRef.pbmc)[, c("sv1", "sv2")])
+countsPCA <- prcomp(countsClr, scale = T)
+
+blood <- as.data.frame(countsPCA$x)
+residuals <- t(apply(betas(PedRef.pbmc), 1, function(x){
+    residuals(summary(lm(x ~ PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, data = blood)))
+    }))
+PedRef.pbmc.cr <- PedRef.pbmc
+adj.residuals <- residuals + matrix(apply(betas(PedRef.pbmc), 1, mean), nrow = nrow(residuals), ncol = ncol(residuals))
+adj.residuals[adj.residuals <= 0] <- 0.0001
+adj.residuals[adj.residuals > 1] <- 0.9999
+betas(PedRef.pbmc.cr) <- adj.residuals 
+
+counts <- hepidish(betas(PedRef.pbmc.cr), ref1.m = centEpiFibIC.m, ref2.m = centBloodSub.m, h.CT.idx = 3, method = "RPC") %>% as.data.frame(.)
+counts$Sample_ID <- rownames(counts)
+BloodPlot(PedRef.pbmc.cr, "Disease_Status", "categorical", premethod = "EPIDISH", counts) # Looks weird, got a wide spread
+
+#save(PedRef.pbmc.cr, PedRef.wb.cr, PedRef.bu.cr, file = "Rdata/08-celltype_corrected.RData")
+```
+
+### Problem with EPIDISH prediction???
+
+```{r}
+BloodPlot(MLset.C.wb, "Disease_Status", "categorical", premethod = "ECC")
+BloodPlot(MLset.C.pbmc, "Disease_Status", "categorical", premethod = "ECC")
+meta <- pData(MLset.C.bl)
+
+MLset.C.wb <- MLset.C.bl[, pData(MLset.C.bl)$Tissue == "WB" & pData(MLset.C.bl)$Disease_Status %in% c("Healthy", "Ctrl", "ASXL1")]
+MLset.C.pbmc <- MLset.C.bl[, pData(MLset.C.bl)$Tissue == "PBMC" & pData(MLset.C.bl)$Disease_Status %in% c("Healthy", "Ctrl", "ASXL1")]
+
+# Try ECC-predicted blood cell proportion
+## WB
+counts <- pData(MLset.C.wb)[, c("Bcell", "NK", "CD4T", "CD8T", "Mono", "Gran")]
+countsClr <- as.data.frame(clr(counts + 1)) %>% cbind(pData(MLset.C.wb)[, c("sv1", "sv2")])
+countsPCA <- prcomp(countsClr, scale = T)
+blood <- as.data.frame(countsPCA$x)
+residuals <- t(apply(betas(PedRef.wb), 1, function(x){
+    residuals(summary(lm(x ~ PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7, data = blood)))
+    }))
+MLset.C.wb.cr <- MLset.C.wb
+adj.residuals <- residuals + matrix(apply(betas(PedRef.wb), 1, mean), nrow = nrow(residuals), ncol = ncol(residuals))
+adj.residuals[adj.residuals <= 0] <- 0.0001
+adj.residuals[adj.residuals > 1] <- 0.9999
+betas(MLset.C.wb.cr) <- adj.residuals 
+
+ECC <- ECC9(betas(MLset.C.wb.cr), tissueType = "blood")
+counts <- as.data.frame(ECC$counts)
+counts$Sample_ID <- rownames(counts)
+BloodPlot(MLset.C.wb.cr, "Disease_Status", "categorical", premethod = "ECC", counts)
+
+###################################################################################################
+
+### PBMC
+counts <- pData(MLset.C.pbmc)[, c("Bcell", "NK", "CD4T", "CD8T", "Mono", "Gran")]
+countsClr <- as.data.frame(clr(counts + 1)) %>% cbind(pData(MLset.C.pbmc)[, c("sv1", "sv2")])
+countsPCA <- prcomp(countsClr, scale = T)
+
+blood <- as.data.frame(countsPCA$x)
+residuals <- t(apply(betas(MLset.C.pbmc), 1, function(x){
+    residuals(summary(lm(x ~ PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7, data = blood)))
+    }))
+MLset.C.pbmc.cr <- MLset.C.pbmc
+adj.residuals <- residuals + matrix(apply(betas(MLset.C.pbmc), 1, mean), nrow = nrow(residuals), ncol = ncol(residuals))
+adj.residuals[adj.residuals <= 0] <- 0.0001
+adj.residuals[adj.residuals > 1] <- 0.9999
+betas(MLset.C.pbmc.cr) <- adj.residuals 
+
+ECC <- ECC9(betas(MLset.C.pbmc.cr), tissueType = "blood")
+counts <- as.data.frame(ECC$counts)
+counts$Sample_ID <- rownames(counts)
+BloodPlot(MLset.C.pbmc.cr, "Disease_Status", "categorical", premethod = "ECC", counts)
+
+#save(MLset.C.pbmc.cr, MLset.C.wb.cr, file = "Rdata/08-celltype_corrected_ECC.RData")
+
+# Rename MLset.C.pbmc.cr and MLset.C.wb.cr to PedRef.pbmc.cr and PedRef.wb.cr respectively
+# This will be the objects used from now on as the final pre-processed objects for all three tissues
+PedRef.pbmc.cr <- MLset.C.pbmc.cr
+PedRef.wb.cr <- MLset.C.wb.cr
+save(PedRef.bu.cr, PedRef.wb.cr, PedRef.pbmc.cr, file = "Rdata/08-celltype_corrected_FINAL.RData")
+
+#BetaPlot(PedRef.bu.cr, "Cohort")
+BetaPlot(PedRef.bu.cr, "Disease_Status")
+#BetaPlot(PedRef.wb.cr, "Cohort")
+BetaPlot(PedRef.wb.cr, "Disease_Status")
+#BetaPlot(PedRef.pbmc.cr, "Cohort")
+BetaPlot(PedRef.pbmc.cr, "Disease_Status")
+```
+
+### Repeat heat scree plot but include cell type proportion this time
+
+```{r}
+# WB
+meta <- pData(PedRef.wb.cr)
+meta_categorical <- meta[, c("Cohort", "Platform_ID", "Sentrix_ID", "Sentrix_row", "Sex", "Disease_Status")] 
+colnames(meta_categorical) <- c("Cohort", "Platform", "Barcode", "Barcode Position", "Sex", "Disease Status")
+meta_continuous <- meta[, c("Age", "Bcell", "NK", "CD4T", "CD8T", "Mono", "Gran", "sv1", "sv2")] 
+#PBMC
+meta <- pData(PedRef.pbmc.cr)
+meta_categorical <- meta[, c("Cohort", "Sentrix_ID", "Sentrix_row", "Sex", "Disease_Status")] 
+colnames(meta_categorical) <- c("Cohort", "Barcode", "Barcode Position", "Sex", "Disease Status")
+meta_continuous <- meta[, c("Age", "Bcell", "NK", "CD4T", "CD8T", "Mono", "Gran", "sv1", "sv2")] 
+# BEC
+meta <- pData(PedRef.bu.cr)
+meta_categorical <- meta[, c("Cohort", "Platform_ID", "Sentrix_ID", "Sentrix_row", "Sex", "Disease_Status")] 
+colnames(meta_categorical) <- c("Cohort", "Platform", "Barcode", "Barcode Position", "Sex", "Disease Status")
+meta_continuous <- meta[, c("Age", "Epi", "Fib", "B", "NK", "CD4T", "CD8T", "Mono", "Neutro", "sv1", "sv2")]
+colnames(meta_continuous) <- c("Age", "Epi", "Fib", "Bcell", "NK", "CD4T", "CD8T", "Mono", "Gran", "sv1", "sv2")
+
+# Try the multiple test corrected plot
+source("~/maggie.fu/Functions/PCA_plot.R")
+PCA.wb <- prcomp(betas(MLset.C.wb.cr))
+PCA_Plot(PCA.wb)
+
+PCA.pbmc <- prcomp(betas(MLset.C.pbmc.cr))
+PCA_Plot(PCA.pbmc)
+
+PCA.bu <- prcomp(betas(PedRef.bu.cr))
+PCA_Plot(PCA.bu)
+```
+
+
+### Variability Filter (not applied here) & Replicate Removal
+Typical done earlier but we want to assess the effect of cell type correction here
+
+```{r}
+#MLset.V <- InvarFilter(MLset.C, 0.02, flist = flist, plot = T)
+
+load("RData/08-celltype_corrected_FINAL.RData")
+MLset.CC <- PedRef.bu.cr # Cell type corrected data
+load("RData/06-batch_corrected_tissue_protected.RData") # Batch corrected
+load("RData/05-normalized.RData") # Normalized
+load("RData/04-outliers_removed_probe_filtered.RData") # Probe filtered
+load("RData/03-all_GEO_reference.RData")
+MLset <- PedRef # Raw
+
+# Check for sibling sample correlation
+reps <- c("Pat_Buccal_1", "Ctrl_Buccal_2")
+RepCorTest(MLset, MLset.P, MLset.N, MLset.C, MLset.CC, labels = c("Raw Data", "Probe Filter", "Normalization", "Batch Corrected", "Cell Type Corrected"))
+
+# Check for tech rep correlation and remove them
+MLset.CC <- PedRef.pbmc.cr # Cell type corrected data
+(reps <- grep("Pat_PBMC_1", sampleNames(MLset.C), value = T) %>% sort(.) %>% .[1:2])
+RepCorTest(MLset, MLset.P, MLset.N, MLset.C, MLset.CC, labels = c("Raw Data", "Probe Filter", "Normalization", "Batch Corrected", "Cell Type Corrected"))
+
+reps <- grep("_REP", sampleNames(MLset.CC), value = T)
+PedRef.pbmc.cr <- PedRef.pbmc.cr[, !sampleNames(PedRef.pbmc.cr) %in% reps]
+
+save(PedRef.pbmc.cr, PedRef.bu.cr, PedRef.wb.cr, file = "RData/09-rep_removed_FINAL.RData")
+```
+
+### For gene region plots, define regions
+
+```{r}
+load("~/maggie.fu/Reference/EPIC_fdat.RData")
+fdat <- fData_EPIC[!is.na(fData_EPIC$MAPINFO), ]
+fdat <- fdat[with(fdat, order(CHR, MAPINFO)),]
+
+# Region for finding DMR
+fdat$Mreg <- 0
+reg <- 1
+for (i in 1:nrow(fdat)) {
+    if (fData_EPIC$MAPINFO[i+1] - fData_EPIC$MAPINFO[i] > 1000) {
+        reg <- reg + 1
+    }
+    fdat$Mreg[i] <- reg
+}
+
+# Regions for gene region plotting
+fdat$Mreg_plt <- 0
+reg <- 1
+for (i in 1:nrow(fdat)) {
+    if (fData_EPIC$MAPINFO[i+1] - fData_EPIC$MAPINFO[i] > 10000) {
+        reg <- reg + 1
+    }
+    fdat$Mreg_plt[i] <- reg
+}
+
+
+fdat_EPIC_Mreg <- fdat
+
+#save(fdat_EPIC_Mreg, file = "~/maggie.fu/Reference/EPIC_fdat_Mreg.RData")
+```
+
+### Look at ASXL1-affected genes
+
+```{r}
+load("Rdata/09-rep_removed_FINAL.RData")
+
+# meta <- pData(PedRef.bu)
+# meta["Pat_Buccal_1", "Disease_Status"] <- "ASXL1"
+# pData(PedRef.bu) <- meta
+
+asxlgenes <- c("ARID5B", "BCL6", "DIRC2", "ICAM4", "RASSF1", "PRAP1", "TFAP2A", "TRPM2", "TNXB")
+
+mcolor <- c("#fc8d62", "#66c2a5", "light gray")
+malpha <- c(1, 1, 0.2)
+plotmultigeneregion(PedRef.bu.cr, asxlgenes, pData(PedRef.bu.cr)$Disease_Status, mcolor, malpha, hide.legend = T, nCol = 1)
+mcolor <- c("#fc8d62", "light gray")
+malpha <- c(1, 0.2)
+plotmultigeneregion(PedRef.pbmc.cr, asxlgenes, pData(PedRef.pbmc.cr)$Disease_Status, cscale = mcolor, ascale = malpha, hide.legend = T, nCol = 1)
+plotmultigeneregion(PedRef.wb.cr, asxlgenes, pData(PedRef.wb.cr)$Disease_Status, cscale = mcolor, ascale = malpha, hide.legend = T, nCol = 1)
+```
+
+### Directly compare the sisters
+
+```{r}
+# Examine global correlation
+cor.test(betas(PedRef.bu)[, "Pat_Buccal_1"], betas(PedRef.bu)[, "Ctrl_Buccal_2"])
+rmse(betas(PedRef.bu)[, "Pat_Buccal_1"], betas(PedRef.bu)[, "Ctrl_Buccal_2"])
+ggplot(betas(PedRef.bu) %>% as.data.frame(), aes(Pat_Buccal_1, Ctrl_Buccal_2)) + 
+    geom_point(alpha = 0.2, color = "light blue", fill = "navy blue") + geom_smooth() + theme_bw() + geom_text("r = 0.938")
+cor.test(betas(PedRef.bu.cr)[, "Pat_Buccal_1"], betas(PedRef.bu)[, "Ctrl_Buccal_2"])
+ggplot(betas(PedRef.bu.cr) %>% as.data.frame(), aes(Pat_Buccal_1, Ctrl_Buccal_2)) + 
+    geom_point(alpha = 0.2, color = "light blue", fill = "navy blue") + geom_smooth() + theme_bw() + geom_text("r = 0.995")
+
+# Difference matrix of the sibling pairs
+betas.Ctrl <- betas(PedRef.bu.cr)[, "Ctrl_Buccal_2"]
+betas.Pat <- betas(PedRef.bu.cr)[, "Pat_Buccal_1"]
+
+if (!identical(rownames(betas.Ctrl), rownames(betas.Pat))) {
+    stop("probe names do not match")
+} else betas.diff <- betas.Pat - betas.Ctrl
+# Regress out cell type and see whether the patient still deviate from standard
+
+betas.diff <- sort(betas.diff)
+betas.diff.abs <- abs(betas.diff)
+
+# sort by the most different sites
+betas.diff.abs <- sort(betas.diff.abs, decreasing = T)
+
+
+load("~/maggie.fu/Reference/EPIC_fdat_Mreg.RData") # See next chunk for method
+# Single site analysis
+betas.diff.abs <- merge(betas.diff.abs, fdat, by = 0)
+topdiffprobe <- betas.diff.abs$UCSC_REFGENE_NAME[1:10] %>% strsplit2(., ";") %>% 
+    as.vector() %>% unique(.) %>% .[!. == ""]
+
+mcolor <- c("#fc8d62", "#66c2a5", "light gray")
+malpha <- c(1, 1, 0.2)
+plotmultigeneregion(PedRef.bu.cr, topdiffprobe, pData(PedRef.bu.cr)$Disease_Status, cscale = mcolor, ascale = malpha, hide.legend = T, nCol = 1)
+#plotmultigeneregion(PedRef.wb.cr, topdiffprobe, pData(PedRef.wb.cr)$Disease_Status, cscale = mcolor, ascale = malpha, hide.legend = T, nCol = 1)
+#plotmultigeneregion(PedRef.pbmc.cr, topdiffprobe, pData(PedRef.pbmc.cr)$Disease_Status)
+
+# do ORA analysis on the most different sites??
+Sys.setenv(JAVA_HOME="/mnt/koborlab-hpc/miniconda2/")
+library(ermineR)
+anno <- read.delim("~/KoborLab/kobor_space/shared_coding_resource/annEPIC_GO_v4.txt", stringsAsFactors = F)
+EPIC_anno <- data.frame(IDs = anno$Gene_name, 
+                        GeneSymbols = anno$Gene_name, 
+                        GeneNames = anno$Gene_name, 
+                        GOTerms = anno$GO_term, 
+                        stringsAsFactors = F)
+topdiff <- anno[anno$CpG %in% rownames(betas.diff.abs)[1:10000], ]
+oraOut <- ora(annotation = EPIC_anno, 
+              hitlist = topdiff$Gene_name)
+oraOut$results %>% View()
+
+
+
+
+# MissMethyl
+topdiff.go <- gometh(betas.diff.abs$Row.names[betas.diff.abs$x > 0.1] %>% as.vector(), 
+                     betas.diff.abs$Row.names, 
+                     "GO", "450K", T)
+topdiff.topgo <- topGO(topdiff.go, ontology = "BP")
+
+topdiff.kegg <- gometh(betas.diff.abs$Row.names[betas.diff.abs$x > 0.1] %>% as.vector(), 
+                       betas.diff.abs$Row.names, 
+                       "KEGG", "450K", T)
+topdiff.topkegg <- topKEGG(topdiff.kegg)
+topdiff.topkegg <- topdiff.topkegg[topdiff.topkegg$FDR < 0.2, ]
+
+save(topdiff.topgo, topdiff.topkegg, file = "RData/101-topdiff_enrichment.RData")
+```
+
+
+### Global detection for DMC: 
+Generate confidence interval for every CpG and see if the patient lies in there
+```{r}
+load("Rdata/08-celltype_corrected_FINAL.RData")
+
+# 1-sample t-test on buccal as well
+betas.bu <- betas(PedRef.bu.cr)
+betas.bu.pat <- betas(PedRef.bu.cr)[, "Pat_Buccal_1"]
+betas.bu.ctrl <- betas(PedRef.bu.cr)[, "Ctrl_Buccal_2"]
+betas.bu.ref <- betas(PedRef.bu.cr)[, which(!sampleNames(PedRef.bu.cr) %in% c("Ctrl_Buccal_2", "Pat_Buccal_1"))]
+#betas.bu.ctref <- cbind(betas.bu.ctrl, betas.bu.ref)
+betas.bu.refIQR <- apply(betas.bu.ref, 1, function(x) {quantile(x, c(0.025, 0.5, 0.975))}) %>% t()
+betas.bu.test <- cbind(betas.bu.refIQR, betas.bu.ctrl, betas.bu.pat) %>% as.data.frame()
+for (i in 1:nrow(betas.bu.test)) {
+    if(betas.bu.test[i, "betas.bu.pat"] < betas.bu.test[i, "2.5%"] | 
+       betas.bu.test[i, "betas.bu.pat"] > betas.bu.test[i, "97.5%"]) {
+        betas.bu.test$pat.test[i] <- "s"
+    } else {
+        betas.bu.test$pat.test[i] <- "ns"
+    }
+}
+betas.bu.test$ctrl.test <- NA
+for (i in 1:nrow(betas.bu.test)) {
+    if(betas.bu.test[i, "betas.bu.ctrl"] < betas.bu.test[i, "2.5%"] | 
+       betas.bu.test[i, "betas.bu.ctrl"] > betas.bu.test[i, "97.5%"]) {
+        betas.bu.test$ctrl.test[i] <- "s"
+    } else {
+        betas.bu.test$ctrl.test[i] <- "ns"
+    }
+}
+betas.bu.test$pat.ctrl.test <- apply(betas.bu.test, 1, function(x) {
+    if(x["pat.test"] == "s" & x["ctrl.test"] == "ns") {
+        return("s")
+    } else {
+        return("ns")
+    }
+})
+
+sum(betas.bu.test$ctrl.test == "s")
+# 7 (0.0017%)
+sum(betas.bu.test$pat.test == "s")
+# 34585 (8.5%)
+
+
+save(betas.bu.test, file = "RData/100-global_IQR_test_bu.RData")
+```
+
+### Do the same thing for WB
+```{r}
+# 1-sample t-test on buccal as well
+betas.wb <- betas(PedRef.wb.cr)
+betas.wb.pat <- betas(PedRef.wb.cr)[, "Pat_WB_1"]
+betas.wb.ref <- betas(PedRef.wb.cr)[, which(!sampleNames(PedRef.wb.cr) %in% "Pat_WB_1")]
+#betas.bu.ctref <- cbind(betas.bu.ctrl, betas.bu.ref)
+betas.wb.refIQR <- apply(betas.wb.ref, 1, function(x) {quantile(x, c(0.025, 0.5, 0.975))}) %>% t()
+betas.wb.test <- cbind(betas.wb.refIQR, betas.wb.pat) %>% as.data.frame()
+for (i in 1:nrow(betas.wb.test)) {
+    if(betas.wb.test[i, "betas.wb.pat"] < betas.wb.test[i, "2.5%"] | 
+       betas.wb.test[i, "betas.wb.pat"] > betas.wb.test[i, "97.5%"]) {
+        betas.wb.test$pat.test[i] <- "s"
+    } else {
+        betas.wb.test$pat.test[i] <- "ns"
+    }
+}
+# betas.wb.test$ctrl.test <- NA
+# for (i in 1:nrow(betas.wb.test)) {
+#     if(betas.wb.test[i, "betas.wb.ctrl"] < betas.wb.test[i, "2.5%"] | 
+#        betas.wb.test[i, "betas.wb.ctrl"] > betas.wb.test[i, "97.5%"]) {
+#         betas.wb.test$ctrl.test[i] <- "s"
+#     } else {
+#         betas.wb.test$ctrl.test[i] <- "ns"
+#     }
+# }
+# betas.wb.test$pat.ctrl.test <- apply(betas.wb.test, 1, function(x) {
+#     if(x["pat.test"] == "s" & x["ctrl.test"] == "ns") {
+#         return("s")
+#     } else {
+#         return("ns")
+#     }
+# })
+
+sum(betas.wb.test$ctrl.test == "s")
+# 0 (0.00%)
+sum(betas.wb.test$pat.test == "s")
+# 88245 (21.8%)
+
+save(betas.wb.test, file = "RData/100-global_IQR_test_wb.RData")
+```
+
+### Gene Enrichment with missMethyl
+
+```{r}
+library(missMethyl)
+library(IlluminaHumanMethylationEPICanno.ilm10b2.hg19)
+gm.bu.go <- gometh(rownames(betas.bu.test)[betas.bu.test$pat.ctrl.test == "s"], 
+                    rownames(betas.bu.test), 
+                    "GO", "EPIC", T)
+topGO(gm.bu.go)
+gm.bu.topgo <- topGO(gm.bu.go, ontology = "BP")
+
+# topGO(gm.out.go, ontology = "CC")
+# topGO(gm.out.go, ontology = "MF")
+gm.bu.kegg <- gometh(rownames(betas.bu.test)[betas.bu.test$pat.ctrl.test == "s"], 
+                      rownames(betas.bu.test), 
+                      "KEGG", "EPIC", T)
+gm.bu.topkegg <- topKEGG(gm.bu.kegg)
+gm.bu.topkegg <- gm.bu.topkegg[gm.bu.topkegg$FDR < 0.2, ]
+
+# Try it on blood
+gm.wb.go <- gometh(rownames(betas.wb.test)[betas.wb.test$pat.test == "s"], 
+                    rownames(betas.wb.test), 
+                    "GO", "EPIC", T)
+topGO(gm.wb.go)
+gm.wb.topgo <- topGO(gm.wb.go, ontology = "BP")
+
+# topGO(gm.out.go, ontology = "CC")
+# topGO(gm.out.go, ontology = "MF")
+gm.wb.kegg <- gometh(rownames(betas.wb.test)[betas.wb.test$pat.test == "s"], 
+                      rownames(betas.wb.test), 
+                      "KEGG", "EPIC", T)
+gm.wb.topkegg <- topKEGG(gm.wb.kegg)
+gm.wb.topkegg <- gm.wb.topkegg[gm.wb.topkegg$FDR < 0.2, ]
+
+save(gm.bu.topgo, gm.bu.topkegg, gm.wb.topgo, gm.wb.topkegg, file = "RData/102-gmIQR_enrichment_bu_wb.RData")
+```
+
+### Find DMRs
+
+```{r}
+#load("RData/102-gmIQR_enrichment_bu_wb.RData")
+load("RData/100-global_IQR_test_bu.RData")
+load("RData/100-global_IQR_test_wb.RData")
+load("~/maggie.fu/Reference/EPIC_fdat_Mreg.RData")
+
+fdat <- merge(betas.bu.test, fdat_EPIC_Mreg[, c("CHR", "MAPINFO", "Mreg", "UCSC_REFGENE_NAME", "GENCODECOMPV12_NAME")], by = 0)
+rownames(fdat) <- fdat$Row.names
+
+# Take the biggest DMRs
+betas.bu.test.dmr <- table(fdat[fdat$pat.ctrl.test == "s", "Mreg"]) %>% sort(decreasing = T) %>% .[.>=4] %>% names()
+
+betas.bu.test.dmr.gene <- sapply(betas.bu.test.dmr, function(x) {
+    return(fdat[fdat$Mreg == x, "UCSC_REFGENE_NAME"] %>% 
+               strsplit2(., ";") %>%
+               as.vector() %>%
+               unique())
+}) 
+bu.test.dmr.genes <- do.call(c, betas.bu.test.dmr.gene)
+toString(shQuote(bu.test.dmr.genes))
+title <- c('SAMD11', 'SFN', 'MIR141, MIR200C', 'MSLNL', '', 'POLR3D, MIR320A')
+bu.test.dmr.genefdat <- fdat[fdat$Mreg %in% betas.bu.test.dmr, ]
+
+mcolor <- c("#fc8d62", "#66c2a5", "light gray")
+malpha <- c(1, 1, 0.2)
+plotmultigeneregion(PedRef.bu.cr, betas.bu.test.dmr, pData(PedRef.bu.cr)$Disease_Status, mcolor, malpha, hide.legend = T, bu.test.dmr.genefdat, "Mreg", title, nCol = 1)
+
+
+# Look at 3-CpG DMRs
+betas.bu.test.dmr <- table(fdat[fdat$pat.ctrl.test == "s", "Mreg"]) %>% sort(decreasing = T) %>% .[.==3] %>% names()
+
+betas.bu.test.dmr.gene <- sapply(betas.bu.test.dmr, function(x) {
+    return(fdat[fdat$Mreg == x, "UCSC_REFGENE_NAME"] %>% 
+               strsplit2(., ";") %>%
+               as.vector() %>%
+               unique())
+}) 
+bu.test.dmr.genes <- do.call(c, betas.bu.test.dmr.gene)
+toString(shQuote(bu.test.dmr.genes))
+title <- c('SKI', '', 'TP73', 'CLCN6, MTHFR', 'ZDHHC18', 'SFN', 'POU3F1', 'TBX15', '', 'S100A8', 'CCDC19', 'PPOX, USP21', 'LAMB3', 'TRAF3IP3', 'C10orf25, ZNF22', 'NODAL', 'C10orf41', 'PPP1R3C', 'PKP3', 'INS-IGF2, IGF2AS, IGF2', '', 'TMEM216', 'LRRN4CL', 'TMEM25', 'BCL9L', 'GRAMD1B', '', 'SCNN1A', 'KRT8', 'KIAA0748','MGC14436', 'RASAL1', 'LOC338799', 'GJB6', 'PLEKHG3', 'GOLGA5', 'XRCC3, KLC1', 'GABRA5', '', 'LTK', 'RPL4, ZWILCH', 'FAH', 'FBXL16', 'SSTR5, LOC146336', '', 'ESRP2', 'C16orf74', 'ACSF3', 'FLJ25006, LOC645851', 'RARA', 'ETV4', 'FMNL1', 'PRR15L', 'ARSG', 'ST6GALNAC1', 'BAHCC1', 'FSCN2', '', 'METRNL', 'GPX4', 'S1PR4', 'TRIP10', 'ZNF561', '', 'NCCRP1', 'PPFIA3, C19orf73', 'CD37', 'PROM2', 'GPR39, LYPD1', 'EPHA4', 'USP40', 'HDAC4', 'C20orf26, CRNKL1', 'RUNX1', 'CELSR1', 'TGFBR2', 'TUSC4, CYB561D2', 'KTELC1', 'SIAH2', 'LOC100130872-SPON2, SPON2', 'MRFAP1L1', 'FRAS1', 'MAD2L1', 'MOCS2', 'DUSP1', '', 'NRSN1', 'DDR1', 'DDR1', 'SNORA38, BAT2', 'C6orf47', 'CSNK2B', 'LY6G6D', 'DDAH2', 'C2, CFB', 'TNXB', 'VPS52, RPS18', 'TAPBP', 'CDKN1A', 'DDO', 'QKI', 'WIPI2', 'DFNA5', 'HOXA3', 'TRIL', 'PON3', 'ARHGEF10', 'EBAG9', 'ANGPTL2, RALGPS1')
+bu.test.dmr.genefdat <- fdat[fdat$Mreg %in% betas.bu.test.dmr, ]
+bu.test.dmr.genefdat <- bu.test.dmr.genefdat[rownames(bu.test.dmr.genefdat) %in% rownames(PedRef.bu.cr), ]
+
+plotmultigeneregion(PedRef.bu.cr, betas.bu.test.dmr, pData(PedRef.bu.cr)$Disease_Status, mcolor, malpha, hide.legend = T, bu.test.dmr.genefdat, "Mreg", title)
+```
+
+### Find DMRs - WB version
+
+```{r}
+load("~/maggie.fu/Reference/EPIC_fdat_Mreg.RData")
+
+fdat <- merge(betas.wb.test, fdat_EPIC_Mreg[, c("CHR", "MAPINFO", "Mreg", "UCSC_REFGENE_NAME", "GENCODECOMPV12_NAME")], by = 0)
+rownames(fdat) <- fdat$Row.names
+
+# Take the biggest DMRs
+betas.wb.test.dmr <- table(fdat[fdat$pat.test == "s", "Mreg"]) %>% sort(decreasing = T) %>% .[.>=3] %>% names()
+
+betas.wb.test.dmr.gene <- sapply(betas.wb.test.dmr, function(x) {
+    return(fdat[fdat$Mreg == x, "UCSC_REFGENE_NAME"] %>% 
+               strsplit2(., ";") %>%
+               as.vector() %>%
+               unique())
+}) 
+wb.test.dmr.genes <- do.call(c, betas.wb.test.dmr.gene)
+toString(shQuote(wb.test.dmr.genes))
+title <- c('MIB2', 'CCDC19', 'TRAF3IP3', 'GRID1', 'SPATA13', 'ZFPM1', 'MIR7-3, C19orf30', 'CNTNAP5', 'SRP72, ARL9', 'PITX2')
+wb.test.dmr.genefdat <- fdat[fdat$Mreg %in% betas.wb.test.dmr, ]
+
+mcolor <- c("#fc8d62", "light gray")
+malpha <- c(1, 0.2)
+plotmultigeneregion(PedRef.wb.cr, betas.wb.test.dmr, pData(PedRef.wb.cr)$Disease_Status, mcolor, malpha, hide.legend = T, wb.test.dmr.genefdat, "Mreg", title, nCol = 1)
+
+# 
+# # Look at 3-CpG DMRs
+# betas.wb.test.dmr <- table(fdat[fdat$pat.test == "s", "Mreg"]) %>% sort(decreasing = T) %>% .[.==3] %>% names()
+# 
+# betas.wb.test.dmr.gene <- sapply(betas.wb.test.dmr, function(x) {
+#     return(fdat[fdat$Mreg == x, "UCSC_REFGENE_NAME"] %>% 
+#                strsplit2(., ";") %>%
+#                as.vector() %>%
+#                unique())
+# }) 
+# wb.test.dmr.genes <- do.call(c, betas.wb.test.dmr.gene)
+# toString(shQuote(wb.test.dmr.genes))
+# title <- c('SKI', '', 'TP73', 'CLCN6, MTHFR', 'ZDHHC18', 'SFN', 'POU3F1', 'TBX15', '', 'S100A8', 'CCDC19', 'PPOX, USP21', 'LAMB3', 'TRAF3IP3', 'C10orf25, ZNF22', 'NODAL', 'C10orf41', 'PPP1R3C', 'PKP3', 'INS-IGF2, IGF2AS, IGF2', '', 'TMEM216', 'LRRN4CL', 'TMEM25', 'BCL9L', 'GRAMD1B', '', 'SCNN1A', 'KRT8', 'KIAA0748','MGC14436', 'RASAL1', 'LOC338799', 'GJB6', 'PLEKHG3', 'GOLGA5', 'XRCC3, KLC1', 'GABRA5', '', 'LTK', 'RPL4, ZWILCH', 'FAH', 'FBXL16', 'SSTR5, LOC146336', '', 'ESRP2', 'C16orf74', 'ACSF3', 'FLJ25006, LOC645851', 'RARA', 'ETV4', 'FMNL1', 'PRR15L', 'ARSG', 'ST6GALNAC1', 'BAHCC1', 'FSCN2', '', 'METRNL', 'GPX4', 'S1PR4', 'TRIP10', 'ZNF561', '', 'NCCRP1', 'PPFIA3, C19orf73', 'CD37', 'PROM2', 'GPR39, LYPD1', 'EPHA4', 'USP40', 'HDAC4', 'C20orf26, CRNKL1', 'RUNX1', 'CELSR1', 'TGFBR2', 'TUSC4, CYB561D2', 'KTELC1', 'SIAH2', 'LOC100130872-SPON2, SPON2', 'MRFAP1L1', 'FRAS1', 'MAD2L1', 'MOCS2', 'DUSP1', '', 'PPP1R3G', 'NRSN1', 'DDR1', 'DDR1', 'SNORA38, BAT2', 'C6orf47', 'CSNK2B', 'LY6G6D', 'DDAH2', 'C2, CFB', 'TNXB', 'VPS52, RPS18', 'TAPBP', 'CDKN1A', 'DDO', 'QKI', 'WIPI2', 'DFNA5', 'HOXA3', 'TRIL', 'PON3', 'ARHGEF10', 'EBAG9', 'ANGPTL2, RALGPS1')
+# wb.test.dmr.genefdat <- fdat[fdat$Mreg %in% betas.wb.test.dmr, ]
+# wb.test.dmr.genefdat <- wb.test.dmr.genefdat[rownames(wb.test.dmr.genefdat) %in% rownames(PedRef.wb.cr), ]
+# 
+# plotmultigeneregion(PedRef.wb.cr, betas.wb.test.dmr, pData(PedRef.wb.cr)$Disease_Status, mcolor, malpha, hide.legend = T, wb.test.dmr.genefdat, "Mreg", title)
+```
+
+
+### DMR Gene Enrichment with missMethyl
+
+```{r}
+# Buccal
+fdat <- merge(betas.bu.test, fdat_EPIC_Mreg[, c("CHR", "MAPINFO", "Mreg", "UCSC_REFGENE_NAME", "GENCODECOMPV12_NAME")], by = 0)
+rownames(fdat) <- fdat$Row.names
+betas.bu.test.dmr <- table(fdat[fdat$pat.ctrl.test == "s", "Mreg"]) %>% sort(decreasing = T) %>% .[.>=2] %>% names()
+
+betas.bu.test.dmr.cpg <- sapply(betas.bu.test.dmr, function(x) {
+    return(fdat[fdat$Mreg == x, "Row.names"])
+}) 
+betas.bu.test.dmr.cpg <- do.call(c, betas.bu.test.dmr.cpg)
+length(betas.bu.test.dmr.cpg)
+gmdmr.bu.go <- gometh(betas.bu.test.dmr.cpg, rownames(betas.bu.test), "GO", "EPIC", T)
+(gmdmr.bu.topgo <- topGO(gmdmr.bu.go, ontology = "BP"))
+gmdmr.bu.kegg <- gometh(betas.bu.test.dmr.cpg, rownames(betas.bu.test), "KEGG", "EPIC", T)
+(gmdmr.bu.topkegg <- gm.bu.topkegg[gm.bu.topkegg$FDR < 0.2, ])
+
+# WB
+fdat <- merge(betas.wb.test, fdat_EPIC_Mreg[, c("CHR", "MAPINFO", "Mreg", "UCSC_REFGENE_NAME", "GENCODECOMPV12_NAME")], by = 0)
+rownames(fdat) <- fdat$Row.names
+betas.wb.test.dmr <- table(fdat[fdat$pat.test == "s", "Mreg"]) %>% sort(decreasing = T) %>% .[.>=2] %>% names()
+betas.wb.test.dmr.cpg <- sapply(betas.wb.test.dmr, function(x) {
+    return(fdat[fdat$Mreg == x, "Row.names"])
+}) 
+betas.wb.test.dmr.cpg <- do.call(c, betas.wb.test.dmr.cpg)
+length(betas.wb.test.dmr.cpg)
+
+gmdmr.wb.go <- gometh(betas.wb.test.dmr.cpg, rownames(betas.wb.test), "GO", "EPIC", T)
+(gmdmr.wb.topgo <- topGO(gmdmr.wb.go, ontology = "BP"))
+gmdmr.wb.kegg <- gometh(betas.wb.test.dmr.cpg, rownames(betas.wb.test), "KEGG", "EPIC", T)
+(gmdmr.wb.topkegg <- gm.wb.topkegg[gm.wb.topkegg$FDR < 0.2, ])
+
+save(gmdmr.bu.topgo, gmdmr.bu.topkegg, gmdmr.wb.topgo, gmdmr.wb.topkegg, file = "RData/103-gmIQR_DMR_enrichment_bu_wb.RData")
+```
+
+
+### 1-sample t-test (failed)
+
+```{r}
+#betas.diff.abs$Mreg <- as.numeric(betas.diff.abs$Mreg)
+Mreg.diff <- betas.diff.abs %>%
+    dplyr::group_by(Mreg) %>%
+    dplyr::summarize(avg.diff = mean(diff, na.rm = TRUE), 
+                     nCpG = n())
+# Group reference by Mreg as well -> calculate IQR
+Variation <- function(x) {quantile(x, c(0.9), na.rm = T)[[1]] - quantile(x, c(0.1), na.rm = T)[[1]]}
+
+# Use 1-sample t-test??? Normality assumption????
+betas.wb.pat <- betas(PedRef.wb.cr)[, "Pat_WB_1"]
+betas.wb.ref <- betas(PedRef.wb.cr)[, which(sampleNames(PedRef.wb.cr) != "Pat_WB_1")]
+betas.wb.refIQR <- apply(betas.wb.ref, 1, function(x) {quantile(x, c(0.1, 0.5, 0.9))}) %>% t()
+tout.wb.pat <- as.data.frame(matrix(nrow = nrow(betas.wb.ref), ncol = 3, dimnames = list(rownames(betas.wb.ref), c("tstat", "pval", "adj.p"))))
+for (i in 1:nrow(betas.wb.ref)) {
+    test <- t.test(betas.wb.ref[i, ], mu = betas.wb.pat[i])
+    tout.wb.pat[i, ] <- c(test$statistic, test$p.value, test$p.value * nrow(betas.wb.ref))
+}
+tout.wb.pat$adj.p <- p.adjust(tout.wb.pat, "bonferroni")
+tout.wb.pat$mreg <- betas.diff.abs[rownames(tout.wb.pat), "Mreg"]
+global.wb.pat <- cbind(pat_beta = betas.wb.pat, betas.wb.refIQR, tout.wb.pat)
+global.wb.pat.reg <- global.wb.pat %>%
+    dplyr::group_by(mreg) %>%
+    dplyr::summarize(avg.patb = mean(pat_beta, na.rm = T), 
+                     avg.refm = mean(`50%`, na.rm = T),
+                     avg.t = mean(tstat, na.rm = T),
+                     avg.adj.p = mean(adj.p, na.rm = T),
+                     size = n())
+
+# 1-sample t-test on buccal as well
+betas.bu <- betas(PedRef.bu.cr)
+betas.bu.pat <- betas(PedRef.bu.cr)[, "Pat_Buccal_1"]
+betas.bu.ctrl <- betas(PedRef.bu.cr)[, "Ctrl_Buccal_2"]
+betas.bu.ref <- betas(PedRef.bu.cr)[, which(!sampleNames(PedRef.bu.cr) %in% c("Ctrl_Buccal_2", "Pat_Buccal_1"))]
+betas.bu.ctref <- cbind(betas.bu.ctrl, betas.bu.ref)
+betas.bu.refIQR <- apply(betas.bu.ref, 1, function(x) {quantile(x, c(0.025, 0.5, 0.975))}) %>% t()
+
+# Generate a null distribution for 1-sample t-test (parallelize)
+library(parallel)
+library(MASS)
+
+tout.bu.all <- mclapply(1:2, mc.cores = 8, function(x) {
+    tout.bu <- as.data.frame(matrix(nrow = nrow(betas.bu.ctref), ncol = 2, 
+                                    dimnames = list(rownames(betas.bu.ctref), c("tstat", "pval"))))
+    for (i in 1:nrow(betas.bu.ctref)) {
+        test <- t.test(betas.bu.ctref[i, -x], mu = betas.bu.ctref[i, x])
+        tout.bu[i, ] <- c(test$statistic, test$p.value)
+    }
+    return(tout.bu)
+})
+
+# Add the patient result
+tout.bu <- as.data.frame(matrix(nrow = nrow(betas.bu.ctref), ncol = 2, 
+                                dimnames = list(rownames(betas.bu.ctref), c("tstat", "pval"))))
+for (i in 1:nrow(betas.bu.ref)) {
+        test <- t.test(betas.bu.pat[i, ], mu = betas.bu.ref[i, ])
+        tout.bu[i, ] <- c(test$statistic, test$p.value)
+    }
+tout.bu.all[[275]] <- tout.bu
+
+## Refer to "sendtoterminal/20190821_onesamplettest_parallelization.R"
+# Ran in terminal
+# > Rscript 20190821_onesamplettest_parallelization.R
+load("termout20190821_2.RData")
+tout.bu.pval <- tout.bu[, grep("pval", colnames(tout.bu))]
+tout.bu.pval <- as.matrix(tout.bu.pval)
+
+tout.bu.pval.t <- as.data.frame(matrix(nrow = nrow(tout.bu.pval), ncol = 2, 
+                                dimnames = list(rownames(tout.bu.pval), c("tstat", "pval"))))
+for (i in 1:nrow(tout.bu.pval.t)) {
+        test <- t.test(tout.bu.pval[i, -ncol(tout.bu.pval)], mu = tout.bu.pval[i, ncol(tout.bu.pval)])
+        tout.bu.pval.t[i, ] <- c(test$statistic, test$p.value)
+    }
+
+tout.bu.adjp <- apply(tout.bu.pval, 2, function(x) {p.adjust(x, method = "BH")})
+tout.bu.adjp <- as.data.frame(tout.bu.adjp)
+tout.bu.adjp$CpG <- rownames(tout.bu.adjp)
+tout.bu.pval.m <- melt(tout.bu.adjp)
+ggplot(tout.bu.pval.m, aes(value)) + geom_histogram(data = tout.bu.pval.m[tout.bu.pval.m$variable != "patpval", ], fill = NA, color = "black", binwidth = 0.01) + geom_histogram(data = tout.bu.pval.m[tout.bu.pval.m$variable == "patpval", ], fill = NA, color = "red", binwidth = 0.01)
+
+ggplot(tout.bu.pval.m[1:1e10, ], aes(value)) + geom_density(aes(group = variable, color = variable)) + theme(legend.position = "none") + theme_minimal()
+
+tout.bu.ctrl$adj.p <- p.adjust(tout.bu.ctrl, "bonferroni")
+tout.bu.pat$mreg <- betas.diff.abs[rownames(tout.bu.pat), "Mreg"]
+global.bu.pat <- cbind(pat_beta = betas.bu.pat, betas.bu.refIQR, tout.bu.pat)
+global.bu.pat.reg <- global.bu.pat %>%
+    dplyr::group_by(mreg) %>%
+    dplyr::summarize(avg.patb = mean(pat_beta, na.rm = T), 
+                     avg.refm = mean(`50%`, na.rm = T),
+                     avg.t = mean(tstat, na.rm = T),
+                     avg.adj.p = mean(adj.p, na.rm = T),
+                     size = n())
+
+tout.bu.ctrl <- as.data.frame(matrix(nrow = nrow(betas.bu.ref), ncol = 2, dimnames = list(rownames(betas.bu.ref), c("tstat", "pval"))))
+for (i in 1:nrow(betas.bu.ref)) {
+    test <- t.test(betas.bu.ref[i, ], mu = betas.bu.ctrl[i])
+    tout.bu.ctrl[i, ] <- c(test$statistic, test$p.value)
+}
+tout.bu.ctrl$adj.p <- p.adjust(tout.bu.ctrl, "bonferroni")
+tout.bu.ctrl$mreg <- betas.diff.abs[rownames(tout.bu.ctrl), "Mreg"]
+global.bu.ctrl <- cbind(pat_beta = betas.bu.ctrl, betas.bu.refIQR, tout.bu.ctrl)
+global.bu.ctrl.reg <- global.bu.ctrl %>%
+    dplyr::group_by(mreg) %>%
+    dplyr::summarize(avg.patb = mean(pat_beta, na.rm = T), 
+                     avg.refm = mean(`50%`, na.rm = T),
+                     avg.t = mean(tstat, na.rm = T),
+                     avg.adj.p = mean(adj.p, na.rm = T),
+                     size = n())
+#save(global.wb.pat, global.wb.pat.reg, global.bu.pat, global.bu.pat.reg, global.bu.ctrl, global.bu.ctrl.reg , file = "RData/10-PedRef_global_differential_methylation.RData")
+load("RData/10-PedRef_global_differential_methylation.RData")
+
+hist(global.bu.ctrl.reg$avg.adj.p)
+hist(global.bu.pat.reg$avg.adj.p)
+dmr.bu.pat <- global.bu.pat.reg %>% 
+    dplyr::filter(avg.adj.p < 0.05 & size > 5) %>%
+    dplyr::arrange(avg.adj.p)
+topdmr <- betas.diff.abs[betas.diff.abs$Mreg %in% dmr.bu.pat$mreg[1:10], "UCSC_REFGENE_NAME"] %>% 
+    strsplit2(., ";") %>% 
+    as.vector() %>% 
+    unique(.) %>% 
+    .[!. == ""]
+mcolor <- c("#fc8d62", "#66c2a5", "light gray")
+malpha <- c(1, 1, 0.2)
+plotmultigeneregion(PedRef.bu.cr, topdmr[3], pData(PedRef.bu.cr)$Disease_Status, cscale = mcolor, ascale = malpha)
+plotmultigeneregion(PedRef.wb.cr, topdiffprobe, pData(PedRef.wb.cr)$Disease_Status, cscale = mcolor, ascale = malpha)
+plotmultigeneregion(PedRef.pbmc.cr, topdiffprobe, pData(PedRef.pbmc.cr)$Disease_Status)
+plotmultigeneregion(PedRef.bu.cr, "TNXB", pData(PedRef.bu.cr)$Disease_Status)
+
+```
+
+### Try running TCA to see the effect of each cell type
+```{r}
+library(TCA)
+set.seed(1)
+samp <- sample(1:ncol(betas.bu.ref), 20)
+tcabeta <- cbind(betas.bu.ref[, samp], Pat_Buccal_1 = betas.bu.pat)
+tcact <- pData(PedRef.bu.cr)[colnames(tcabeta), c("Epi", "Fib", "B", "NK", "CD4T", "CD8T", "Mono", "Neutro", "Eosino")]
+tcact[tcact < 1e-5] <- 1e-5
+test <- apply(tcact, 1, function(x) {
+   return(x / sum(x))
+})
+tcact <- t(test)
+#tcact[, "Eosino"] <- 1 - rowSums(tcact[, 1:8])
+tcac1 <- model.matrix(~ Disease_Status + Sex + Age, data = pData(PedRef.bu.cr)[colnames(tcabeta), ])
+tcac1 <- tcac1[, 2:4]
+tcac2 <- pData(PedRef.bu.cr)[colnames(tcabeta), c("sv1", "sv2")]
+
+tcaout <- tca(X = tcabeta, W = tcact, C1 = tcac1, C2 = tcac2, parallel = F)
+```
+
+### Annotations
+
+```{r}
+# Taken from MissMethyl
+anno <- getAnnotation(IlluminaHumanMethylationEPICanno.ilm10b2.hg19)
+# get rid of the non-CpG sites
+#ann.keep<-anno[grepl("^cg",anno$Name),]
+
+# get rid of CpGs that are not annotated
+missing <- anno$UCSC_RefGene_Name == ""
+ann.keep <- anno[!missing,]
+  
+# get individual gene names for each CpG
+geneslist <- strsplit(ann.keep$UCSC_RefGene_Name, split = ";")
+names(geneslist) <- rownames(ann.keep)
+grouplist <- strsplit(ann.keep$UCSC_RefGene_Group,split = ";")
+names(grouplist) <- rownames(ann.keep)
+
+flat <- data.frame(symbol=unlist(geneslist),group=unlist(grouplist))
+flat$symbol <- as.character(flat$symbol)
+flat$group <- as.character(flat$group)
+
+flat$cpg <- substr(rownames(flat), 1, 10)
+#flat$cpg <- rownames(flat)
+flat$alias <- suppressWarnings(limma:::alias2SymbolTable(flat$symbol))
+
+#eg <- toTable(org.Hs.egSYMBOL2EG)
+eg <- suppressMessages(select(org.Hs.eg.db, keys=keys(org.Hs.eg.db), 
+                              columns=c("ENTREZID","SYMBOL"), 
+                              keytype="ENTREZID"))
+colnames(eg) <- c("gene_id","symbol")
+m <- match(flat$alias,eg$symbol)
+flat$entrezid <- eg$gene_id[m]
+flat <- flat[!is.na(flat$entrezid), ]
+
+# keep unique cpg by gene name annotation
+id <- paste(flat$cpg,flat$entrezid,sep=".")
+d <- duplicated(id)
+flat.u <- flat[!d,]
+flat.u
+
+sig.cpg <- unique(sig.cpg)
+m1 <- match(flat.u$cpg, sig.cpg)
+eg.sig <- flat.u$entrezid[!is.na(m1)]
+eg.sig <- unique(eg.sig)
+m2 <- match(flat.u$cpg,all.cpg)
+eg.all <- flat.u$entrezid[!is.na(m2)]
+freq_genes <- table(eg.all)
+eg.universe <- names(freq_genes)
+test.de <- as.integer(eg.universe %in% eg.sig)
+sorted.eg.sig <- eg.universe[test.de==1]
+multimap <- data.frame(table(flat.u$cpg))
+multimap$Var1 <- as.character(multimap$Var1)
+m3 <- match(flat.u$cpg, multimap$Var1)
+flat.u$multimap <- multimap$Freq[m3]
+flat.u$inv.multimap <- 1/flat.u$multimap
+equivN <- tapply(flat.u$inv.multimap,flat.u$entrezid,sum)
+mm <- match(eg.universe,names(equivN))
+equivN <- equivN[mm]
+sig.flat <- flat.u[!is.na(m1),]
+fract <- data.frame(weight=pmin(tapply(1/sig.flat$multimap,sig.flat$entrezid,sum),1))
+m4 <- match(sorted.eg.sig,rownames(fract))
+fract.counts <- fract$weight[m4]
+out <- list(sig.eg = sorted.eg.sig, universe = eg.universe, 
+            freq = freq_genes, equiv =  equivN, de = test.de, 
+            fract.counts = data.frame(sigid=sorted.eg.sig,frac=fract.counts))
+out
+```
+
